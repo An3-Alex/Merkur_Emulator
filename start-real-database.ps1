@@ -75,8 +75,6 @@ $arguments = @(
     '--expected-loader-sha256', (Get-SelectedInputHash $Loader),
     '--database', $Database,
     '--expected-database-sha256', (Get-SelectedInputHash $Database),
-    '--config', $Config,
-    '--expected-config-sha256', (Get-SelectedInputHash $Config),
     '--timer-interval', $DbTimerInterval.ToString([Globalization.CultureInfo]::InvariantCulture),
     '--duart-x1-hz', [string]$DuartX1Hz,
     '--connect-timeout', $DbConnectTimeout.ToString([Globalization.CultureInfo]::InvariantCulture),
@@ -91,6 +89,9 @@ if (-not [string]::IsNullOrWhiteSpace($Image)) {
 }
 if (-not [string]::IsNullOrWhiteSpace($FactoryReset)) {
     $arguments += @('--factory', $FactoryReset, '--expected-factory-sha256', (Get-SelectedInputHash $FactoryReset))
+}
+if (-not [string]::IsNullOrWhiteSpace($Config)) {
+    $arguments += @('--config', $Config, '--expected-config-sha256', (Get-SelectedInputHash $Config))
 }
 if ($TraceDiagnostics) { $arguments += '--trace-diagnostics' }
 if ($DoorOpen) { $arguments += '--door-open' }
@@ -138,8 +139,7 @@ if ($DryRun) {
 foreach ($item in @(
     @{ Name = 'Image'; Value = $Image },
     @{ Name = 'Database'; Value = $Database },
-    @{ Name = 'Loader'; Value = $Loader },
-    @{ Name = 'Config'; Value = $Config }
+    @{ Name = 'Loader'; Value = $Loader }
 )) {
     if ([string]::IsNullOrWhiteSpace($item.Value)) {
         throw "Datei auswählen: $($item.Name)"

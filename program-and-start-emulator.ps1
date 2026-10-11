@@ -82,14 +82,15 @@ $programArgs = @(
     '--expected-loader-sha256', (Get-SelectedInputHash $Loader),
     '--factory', $FactoryReset,
     '--expected-factory-sha256', (Get-SelectedInputHash $FactoryReset),
-    '--config', $Config,
-    '--expected-config-sha256', (Get-SelectedInputHash $Config),
     '--database', $Database,
     '--expected-database-sha256', (Get-SelectedInputHash $Database),
     '--date', $DatabaseDate.ToString('yyyy-MM-ddTHH:mm:ss')
 )
 if ($null -ne $D3) { $programArgs += @('--d3', ('0x{0:X8}' -f $D3)) }
 else { $programArgs += @('--runtime-dump', $RuntimeDump) }
+if (-not [string]::IsNullOrWhiteSpace($Config)) {
+    $programArgs += @('--config', $Config, '--expected-config-sha256', (Get-SelectedInputHash $Config))
+}
 
 $runtimeLauncher = Join-Path $PSScriptRoot 'start-real-database.ps1'
 if ($DryRun) {
@@ -116,8 +117,7 @@ foreach ($item in @(
     @{ Name = 'Image'; Value = $Image },
     @{ Name = 'Database'; Value = $Database },
     @{ Name = 'Loader'; Value = $Loader },
-    @{ Name = 'FactoryReset'; Value = $FactoryReset },
-    @{ Name = 'Config'; Value = $Config }
+    @{ Name = 'FactoryReset'; Value = $FactoryReset }
 )) {
     if ([string]::IsNullOrWhiteSpace($item.Value)) {
         throw "Datei auswählen: $($item.Name)"

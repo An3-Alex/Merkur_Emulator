@@ -164,7 +164,6 @@ def validate_selection(selection: Selection) -> list[str]:
         "Datenbank": selection.database,
         "Loader": selection.loader,
         "Factory": selection.factory,
-        "Konfiguration": selection.config,
         "Zulassungskarte": selection.admission_eeprom,
         "QEMU für Spiel-PC": selection.qemu_x86,
         "QEMU für Datenbank": selection.qemu_m68k,
@@ -175,6 +174,9 @@ def validate_selection(selection: Selection) -> list[str]:
             issues.append(f"{label}: Datei auswählen")
         elif not Path(value).is_file():
             issues.append(f"{label}: Datei nicht gefunden: {value}")
+    # Only game packages without their own game list come with a configuration module.
+    if selection.config and not Path(selection.config).is_file():
+        issues.append(f"Konfiguration: Datei nicht gefunden: {selection.config}")
     if issues:
         return issues
     if Path(selection.admission_eeprom).stat().st_size != 256:
@@ -261,7 +263,7 @@ def launch_command(selection: Selection, project: Path) -> list[str]:
         "-Database", selection.database,
         "-Loader", selection.loader,
         "-FactoryReset", selection.factory,
-        "-Config", selection.config,
+        *(("-Config", selection.config) if selection.config else ()),
         "-AdmissionEeprom", selection.admission_eeprom,
         "-GuestRamMiB", str(selection.guest_ram_mib),
         "-GuestVcpus", str(selection.guest_vcpus),

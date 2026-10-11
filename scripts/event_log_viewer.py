@@ -295,6 +295,8 @@ class BridgeLogParser:
             events.append(Event("Fehler", "F_UHR: Kalender und Firmware-Prüfwerte erfasst", line, "warning"))
         elif line.startswith("DB_CONFIG_RAM_PROGRAMMED"):
             events.append(Event("Board", "Las-Vegas-Config im 2-MB-RAM eingerichtet", line))
+        elif line.startswith("DB_CONFIG_RAM_UNCHANGED"):
+            events.append(Event("Board", "Spielepaket ohne Konfiguration gestartet", line))
         elif line.startswith("DB_VERSION_UNVERIFIED"):
             names = re.search(r"\bnames=(.+)$", line)
             suffix = f": {names.group(1)}" if names else ""

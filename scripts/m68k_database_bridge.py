@@ -2418,10 +2418,13 @@ def run_bridge(args: argparse.Namespace) -> int:
         moved = resolve(load_table(), runtime)
         args.addresses_adapted = len(moved)
         return relocated_bridge(moved).run_bridge(args)
-    config_writes, config_digest = prepare_config_writes(
-        args.config, args.expected_config_sha256,
-        args.d3 if args.d3 is not None else 0xD27B7159,
-    )
+    # A game package that brings its own game list needs no configuration module.
+    config_writes, config_digest = [], None
+    if args.config is not None:
+        config_writes, config_digest = prepare_config_writes(
+            args.config, args.expected_config_sha256,
+            args.d3 if args.d3 is not None else 0xD27B7159,
+        )
     factory_runtime = None
     factory_path = getattr(args, "factory", None)
     if factory_path is not None:
@@ -2496,6 +2499,7 @@ def run_bridge(args: argparse.Namespace) -> int:
             for address, data in config_writes:
                 load_memory(rsp, address, data)
             print(
+                "DB_CONFIG_RAM_UNCHANGED reason=no-configuration-module" if not config_writes else
                 "DB_CONFIG_RAM_PROGRAMMED "
                 f"sha256={config_digest} "
                 f"clear={CONFIG_CLEAR_START:08X} "
@@ -4283,8 +4287,8 @@ def main() -> int:
     parser.add_argument("--expected-loader-sha256", required=True)
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--expected-database-sha256", required=True)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--expected-config-sha256", required=True)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--expected-config-sha256")
     parser.add_argument("--factory", type=Path,
                         help="original Factory module, executed before cold-start programming")
     parser.add_argument("--expected-factory-sha256")

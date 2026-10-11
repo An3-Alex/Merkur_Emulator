@@ -58,7 +58,7 @@ FIELDS = (
     ("database", "Datenbank (M90)"),
     ("loader", "Loader"),
     ("factory", "Factory"),
-    ("config", "Konfiguration"),
+    ("config", "Konfiguration (nur wenn das Spielepaket eine hat)"),
     ("admission_eeprom", "Zulassungskarte (EEPROM)"),
     ("qemu_x86", "QEMU Spiel-PC"),
     ("qemu_m68k", "QEMU Datenbank"),

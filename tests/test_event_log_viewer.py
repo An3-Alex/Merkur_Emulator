@@ -234,6 +234,8 @@ class EventLogViewerTests(unittest.TestCase):
         parser = viewer.BridgeLogParser()
         events = parser.feed("DB_CONFIG_RAM_PROGRAMMED sha256=ABC")
         self.assertIn("Config", events[0].title)
+        events = parser.feed("DB_CONFIG_RAM_UNCHANGED reason=no-configuration-module")
+        self.assertEqual(events[0].title, "Spielepaket ohne Konfiguration gestartet")
 
     def test_first_completed_frame_does_not_duplicate_byte_log(self) -> None:
         parser = viewer.BridgeLogParser()

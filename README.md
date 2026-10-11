@@ -11,9 +11,10 @@ Service und Spielgeldeinwurf. Ton und ein optionales Live-Protokoll sind enthalt
 
 1. `M90-Emulator.exe` öffnen und die benötigten Abhängigkeiten über den Starter einrichten.
 2. Eigenes CF-Image, einen getrennten Arbeitskopie-Pfad und die passenden
-   Datenbankdateien auswählen: Loader, Factory, Konfiguration und Spielepaket.
-   Zulassungskarten-EEPROM und QXL-Treiber werden ebenfalls benötigt, die
-   SwiftShader-DLL nur für den Grafikpfad SwiftShader.
+   Datenbankdateien auswählen: Loader, Factory und Spielepaket; die
+   Konfiguration nur, wenn das Spielepaket eine hat. Zulassungskarten-EEPROM
+   und QXL-Treiber werden ebenfalls benötigt, die SwiftShader-DLL nur für den
+   Grafikpfad SwiftShader.
 3. Beim ersten Mal „Frisches Image einrichten“ verwenden. Danach „Emulator starten“.
    Eine bereits eingerichtete Arbeitskopie kann direkt gestartet werden.
 
@@ -90,10 +91,10 @@ Mit diesen CF-Karten und Datenbanken läuft der Emulator.
 
 **Kombination 2 (Magie 88 CC4):** CF-Karte mit der Startanzeige
 `M440_945_KOMBI_V18`, `SW-Date: 20121212`, `ADP - LOADER VERSION V7.0.0.3`.
-Die Datenbank meldet sich mit dieser Konfiguration als `ADP1444`; die
-Zulassungskarte braucht dazu das Profil 1150. Getestet sind Start,
-Spielauswahl, Münzeinwurf, Umbuchung mit „Automatik“ und das Laden eines
-Spiels.
+Dieses Spielepaket hat keine Konfiguration. Die Datenbank meldet sich als
+`ADP1444`; die Zulassungskarte braucht dazu das Profil 1150. Getestet sind
+Start, Spielauswahl, Münzeinwurf, Umbuchung mit „Automatik“ und das Laden
+eines Spiels.
 
 | Teil | Datei | SHA-256 |
 | --- | --- | --- |

@@ -231,9 +231,18 @@ class QemuLaunchPlanTests(unittest.TestCase):
         arguments = programming["arguments"]
         self.assertEqual(programming["date"], "2012-02-01T22:14:00")
         # Dry-run without actual owner files uses placeholders, not an M90 whitelist.
-        for role in ("loader", "database", "factory", "config"):
+        for role in ("loader", "database", "factory"):
             flag = f"--expected-{role}-sha256"
             self.assertEqual(arguments[arguments.index(flag) + 1], "0" * 64)
+        # A game package with its own game list is programmed without a configuration module.
+        self.assertNotIn("--config", arguments)
+        self.assertNotIn("--config", plan["runtime"]["database_bridge"]["arguments"])
+        config = r"D:\DB Files\Config.bin"
+        with_config = self.script_plan(PROGRAM_AND_START_LAUNCHER, "-Config", config)
+        for arguments in (with_config["virtual_programming"]["arguments"],
+                          with_config["runtime"]["database_bridge"]["arguments"]):
+            self.assertEqual(arguments[arguments.index("--config") + 1], config)
+            self.assertEqual(arguments[arguments.index("--expected-config-sha256") + 1], "0" * 64)
         self.assertEqual(
             plan["runtime"]["database_bridge"]["host_pause_seconds"], 0.0
         )

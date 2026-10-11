@@ -144,8 +144,9 @@ class VirtualDatabaseChip:
         d3: int | None = None,
         runtime_dump: Path | None = None,
     ) -> bytes:
-        if self.phase is not ChipPhase.CONFIG_SET:
-            raise RuntimeError("database upload requires loader, factory, date and config")
+        # A game package with its own game list is uploaded without a configuration module.
+        if self.phase not in (ChipPhase.CONFIG_SET, ChipPhase.DATE_SET):
+            raise RuntimeError("database upload requires loader, factory and date")
         runtime, report = prepare_runtime(
             path, expected_sha256, d3=d3, runtime_dump_path=runtime_dump
         )
@@ -181,8 +182,8 @@ def main() -> int:
     parser.add_argument("--expected-loader-sha256", required=True)
     parser.add_argument("--factory", type=Path, required=True)
     parser.add_argument("--expected-factory-sha256", required=True)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--expected-config-sha256", required=True)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--expected-config-sha256")
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--expected-database-sha256", required=True)
     source = parser.add_mutually_exclusive_group(required=True)
@@ -195,7 +196,8 @@ def main() -> int:
     chip.upload_loader(args.loader, args.expected_loader_sha256)
     chip.upload_factory_module(args.factory, args.expected_factory_sha256)
     chip.set_date(dt.datetime.fromisoformat(args.date))
-    chip.upload_config_module(args.config, args.expected_config_sha256)
+    if args.config is not None:
+        chip.upload_config_module(args.config, args.expected_config_sha256)
     chip.upload_database(
         args.database, args.expected_database_sha256,
         d3=args.d3, runtime_dump=args.runtime_dump,

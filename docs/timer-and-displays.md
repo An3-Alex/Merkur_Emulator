@@ -103,6 +103,14 @@ Kommt eine Adresskonstante in `m68k_database_bridge.py` oder
 des geprüften Stands neu erzeugt:
 `python scripts/firmware_relocation.py --build RUNTIME`.
 
+## Konfiguration
+
+Die Konfiguration eines Spielepakets ist ein kleines Modul: Es legt eine
+512-Byte-Tabelle (die Spielliste) 0x400 Byte und eine 24-Byte-Kennung 0x80
+Byte unter das Speicherende und übergibt an den Loader. Ein Spielepaket, das
+seine Spielliste selbst mitbringt, wird ohne Konfiguration gestartet; das
+Feld im Starter bleibt dann leer (`DB_CONFIG_RAM_UNCHANGED`).
+
 ## Zulassungskarte und Tasten
 
 Die Datenbank liest von der Karte Nummer, Profil und vier Bytes ab `0x0D`. Das
