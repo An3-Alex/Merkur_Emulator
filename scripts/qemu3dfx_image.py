@@ -8,7 +8,8 @@ import struct
 
 from graphics_update import (PROXY_HASH, PREVIOUS_PROXIES, SWIFTSHADER_HASH, CGOS_HASH,
                              PREVIOUS_CGOS,
-                             inside, require_hash, require_file, sha256, durable_copy)
+                             inside, require_hash, sha256, durable_copy)
+from guest_files import game_programs
 from qemu3dfx_package import validate
 
 MARKER = "NVRAM/m90_qemu3dfx.json"
@@ -222,9 +223,9 @@ def install(root: Path, bundle: Path, *, check_only: bool = False) -> str:
     if inside(root, "NVRAM/m90_setup_stage.txt").read_text().strip() != "stage=ready":
         raise ValueError("The image must be completely prepared first")
     targets = []
+    # Any version of the game program; graphics_update reports unverified ones.
+    game_programs(root)
     for directory in ("NVRAM", "WorkDir"):
-        # Any version of the game program; graphics_update reports unverified ones.
-        require_file(inside(root, f"{directory}/game.exe"))
         # SwiftShader is optional (QEMU-3dfx never loads it); a present copy
         # must still be the verified one.
         swiftshader = inside(root, f"{directory}/swiftshader_d3d9.dll")

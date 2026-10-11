@@ -10,19 +10,14 @@
  * This proxy forwards the
  * two FBWF exports used by game.exe to the untouched system DLL and redirects
  * only the verified SRAM GUID/path/IOCTL sequence to a persistent image file.
+ * The imports of both programs are found by name: every version keeps them
+ * at other addresses.
  */
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <setupapi.h>
 #include "guest_log_limit.h"
-
-#define GAME_IAT_CREATEFILEW_RVA                    0x002FE11CUL
-#define GAME_IAT_DEVICEIOCONTROL_RVA                0x002FE120UL
-#define GAME_IAT_SETUPDIGETCLASSDEVSW_RVA           0x002FE2B0UL
-#define GAME_IAT_SETUPDIGETDEVICEINTERFACEDETAILW_RVA 0x002FE2B4UL
-#define GAME_IAT_SETUPDIDESTROYDEVICEINFOLIST_RVA   0x002FE2B8UL
-#define GAME_IAT_SETUPDIENUMDEVICEINTERFACES_RVA    0x002FE2BCUL
 
 #define SRAM_IOCTL_WRITE 0x9C402000UL
 #define SRAM_IOCTL_READ  0x9C402004UL
@@ -398,46 +393,6 @@ static BOOL WINAPI hook_device_io_control(HANDLE device, DWORD code,
     return result;
 }
 
-static void install_game_hooks(void) {
-    unsigned char *base = (unsigned char *)GetModuleHandleA(NULL);
-    void *original;
-    log_text("DllMain: installing game hooks\r\n");
-    if (!base) {
-        log_text("DllMain: no main module\r\n");
-        return;
-    }
-    if (!patch_iat((void **)(base + GAME_IAT_CREATEFILEW_RVA),
-                   hook_create_file_w, &original)) {
-        log_text("DllMain: CreateFileW hook failed\r\n"); return;
-    }
-    log_text("DllMain: CreateFileW hook installed\r\n");
-    if (!patch_iat((void **)(base + GAME_IAT_DEVICEIOCONTROL_RVA),
-                   hook_device_io_control, &original)) {
-        log_text("DllMain: DeviceIoControl hook failed\r\n"); return;
-    }
-    log_text("DllMain: DeviceIoControl hook installed\r\n");
-    if (!patch_iat((void **)(base + GAME_IAT_SETUPDIGETCLASSDEVSW_RVA),
-                   hook_get_class_devs_w, (void **)&g_real_get_class_devs)) {
-        log_text("DllMain: GetClassDevs hook failed\r\n"); return;
-    }
-    log_text("DllMain: GetClassDevs hook installed\r\n");
-    if (!patch_iat((void **)(base + GAME_IAT_SETUPDIGETDEVICEINTERFACEDETAILW_RVA),
-                   hook_get_device_interface_detail_w, (void **)&g_real_get_detail)) {
-        log_text("DllMain: GetDetail hook failed\r\n"); return;
-    }
-    log_text("DllMain: GetDetail hook installed\r\n");
-    if (!patch_iat((void **)(base + GAME_IAT_SETUPDIDESTROYDEVICEINFOLIST_RVA),
-                   hook_destroy_device_info_list, (void **)&g_real_destroy_list)) {
-        log_text("DllMain: DestroyList hook failed\r\n"); return;
-    }
-    log_text("DllMain: DestroyList hook installed\r\n");
-    if (!patch_iat((void **)(base + GAME_IAT_SETUPDIENUMDEVICEINTERFACES_RVA),
-                   hook_enum_device_interfaces, (void **)&g_real_enum_interfaces)) {
-        log_text("DllMain: EnumInterfaces hook failed\r\n"); return;
-    }
-    log_text("DllMain: all hooks installed\r\n");
-}
-
 /* Match resolved imports, including Borland images with no separate ILT.
  * Only imports owned by the main executable are changed; the proxy's own
  * kernel32 calls and unrelated DLLs remain untouched. */
@@ -459,6 +414,40 @@ static BOOL install_named_hook(unsigned char *base, const char *dll,
         }
     }
     return FALSE;
+}
+
+static void install_game_hooks(unsigned char *base) {
+    log_text("DllMain: installing game hooks\r\n");
+    if (!install_named_hook(base, "KERNEL32.DLL", "CreateFileW",
+                            hook_create_file_w, NULL)) {
+        log_text("DllMain: CreateFileW hook failed\r\n"); return;
+    }
+    log_text("DllMain: CreateFileW hook installed\r\n");
+    if (!install_named_hook(base, "KERNEL32.DLL", "DeviceIoControl",
+                            hook_device_io_control, NULL)) {
+        log_text("DllMain: DeviceIoControl hook failed\r\n"); return;
+    }
+    log_text("DllMain: DeviceIoControl hook installed\r\n");
+    if (!install_named_hook(base, "SETUPAPI.DLL", "SetupDiGetClassDevsW",
+                            hook_get_class_devs_w, (void **)&g_real_get_class_devs)) {
+        log_text("DllMain: GetClassDevs hook failed\r\n"); return;
+    }
+    log_text("DllMain: GetClassDevs hook installed\r\n");
+    if (!install_named_hook(base, "SETUPAPI.DLL", "SetupDiGetDeviceInterfaceDetailW",
+                            hook_get_device_interface_detail_w, (void **)&g_real_get_detail)) {
+        log_text("DllMain: GetDetail hook failed\r\n"); return;
+    }
+    log_text("DllMain: GetDetail hook installed\r\n");
+    if (!install_named_hook(base, "SETUPAPI.DLL", "SetupDiDestroyDeviceInfoList",
+                            hook_destroy_device_info_list, (void **)&g_real_destroy_list)) {
+        log_text("DllMain: DestroyList hook failed\r\n"); return;
+    }
+    log_text("DllMain: DestroyList hook installed\r\n");
+    if (!install_named_hook(base, "SETUPAPI.DLL", "SetupDiEnumDeviceInterfaces",
+                            hook_enum_device_interfaces, (void **)&g_real_enum_interfaces)) {
+        log_text("DllMain: EnumInterfaces hook failed\r\n"); return;
+    }
+    log_text("DllMain: all hooks installed\r\n");
 }
 
 static BOOL install_service_hooks(unsigned char *base) {
@@ -541,7 +530,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
         if (lstrcmpiA(name, "GGSG_Servic.exe") == 0 || imports_sram_initialize(base)) {
             if (!install_service_hooks(base)) return FALSE;
         } else if (lstrcmpiA(name, "game.exe") == 0) {
-            install_game_hooks();
+            install_game_hooks(base);
             if (!install_named_hook(base, "KERNEL32.DLL", "CloseHandle", hook_close_handle, NULL)) return FALSE;
         } else {
             log_text("DllMain: SRAM hooks not installed for process ");

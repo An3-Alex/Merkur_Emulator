@@ -74,16 +74,20 @@ def require_file(path: Path) -> None:
 
 def version_notes(root: Path, *, audio: bool = False) -> list[str]:
     """Lines for the operator about cabinet files that are not the verified versions."""
-    from guest_files import note
+    from guest_files import game_programs, note
     root = root.resolve()
     lines = []
-    checks = [(f"{directory}/game.exe", GAME_HASH, "Spielprogramm") for directory in ("NVRAM", "WorkDir")]
+    checks = [(str(path.relative_to(root)), GAME_HASH, "Spielprogramm") for path in game_programs(root)]
     if audio:
         checks.append(("WINDOWS/system32/irrKlang.dll", ORIGINAL_AUDIO_HASH, "Ton-Bibliothek"))
     for relative, verified, label in checks:
         line = note(inside(root, relative), {verified}, label)
         if line is not None and line not in lines:
             lines.append(line)
+    from guest_files import check_list_pending
+    if check_list_pending(root):
+        lines.append("Hinweis: Die Prüfliste dieser Karte passt nicht zu ihren Dateien (Spieldaten nachträglich "
+                     "geändert); sie wird durch die vom Spiel berechnete Liste ersetzt.")
     return lines
 
 
@@ -126,8 +130,10 @@ def update(root: Path, bootstrap: Path, proxy: Path, *, audio: Path | None = Non
     if cgos is not None:
         require_hash(cgos, {CGOS_HASH})
         targets.append(("WINDOWS/system32/Cgos.dll", cgos, CGOS_HASH, {CGOS_HASH, *PREVIOUS_CGOS}))
+    from guest_files import adapt_check_list, check_list_pending, game_programs
+    game_programs(root)
+    list_pending = check_list_pending(root)
     for directory in ("NVRAM", "WorkDir"):
-        require_file(inside(root, f"{directory}/game.exe"))
         if not gpu:
             require_hash(inside(root, f"{directory}/swiftshader_d3d9.dll"), {SWIFTSHADER_HASH})
             targets.append((f"{directory}/d3d9.dll", proxy, PROXY_HASH,
@@ -149,8 +155,12 @@ def update(root: Path, bootstrap: Path, proxy: Path, *, audio: Path | None = Non
         if target.with_name(target.name + ".m90-graphics-new").exists():
             raise ValueError(f"Unfinished update file: {target}")
     if not changed:
-        if service_pending:
-            return f"{label} update required" if check_only else update_service_sram(root, sram)
+        if service_pending or list_pending:
+            if check_only:
+                return f"{label} update required"
+            if list_pending:
+                adapt_check_list(root)
+            return update_service_sram(root, sram) if service_pending else f"{label} updated; check list adapted"
         return f"{label} already current"
     if check_only:
         return f"{label} update required"
@@ -194,6 +204,8 @@ def update(root: Path, bootstrap: Path, proxy: Path, *, audio: Path | None = Non
     manifest.write_text(json.dumps(dict(state="installed", files=entries), indent=2) + "\n")
     if service_pending:
         update_service_sram(root, sram)
+    if list_pending:
+        adapt_check_list(root)
     return f"{label} updated; backup: {backup.relative_to(root)}"
 
 

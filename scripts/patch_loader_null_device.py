@@ -8,7 +8,8 @@ CreateFileW path byte-for-byte for every non-NULL pointer.
 
 The routine is found by its instructions, not by the loader's version: a
 loader that contains it gets the same patch, one that does not is copied
-unchanged.
+unchanged. Loaders built with frame pointers load the pointer after the
+arguments; there the check precedes the last argument.
 """
 
 from __future__ import annotations
@@ -30,6 +31,15 @@ ROUTINE_CALL = bytes.fromhex("83 c0 04 50 ff 15")        # add eax,4; push eax; 
 # cmp eax,-1; mov [esi],eax; jne ...; the routine's own failure exit follows.
 ROUTINE_CHECK = bytes.fromhex("83 f8 ff 89 06 75")
 ROUTINE_FAILURE = bytes.fromhex("33 c0 5e c3")           # xor eax,eax; pop esi; ret
+# The same routine built with a frame pointer: push ebp; mov ebp,esp; push ecx;
+# mov [ebp-4],ecx; five arguments; push 0xC0000000; mov eax,[ebp-4];
+# mov ecx,[eax+member]; add ecx,4; push ecx; call [CreateFileW]
+FRAME_HEAD = bytes.fromhex("55 8b ec 51 89 4d fc 6a 00 6a 00 6a 03 6a 00 6a 00")
+FRAME_EXPECTED = bytes.fromhex("68 00 00 00 c0")         # push 0xC0000000
+FRAME_LOAD = bytes.fromhex("8b 45 fc 8b 48")             # mov eax,[ebp-4]; mov ecx,[eax+member]
+FRAME_CALL = bytes.fromhex("83 c1 04 51 ff 15")          # add ecx,4; push ecx; call [CreateFileW]
+FRAME_CAVE = 0x80                                        # behind the room of the other trampolines
+FRAME_CAVE_STEP = 0x20
 CAVE_ALIGNMENT = 16
 # Room behind the code for this trampoline and the idle-wait trampolines.
 CAVE_ROOM = 0x100
@@ -56,6 +66,47 @@ def code_section(data: bytes, offset: int) -> tuple[int, int, int, int] | None:
         if raw <= offset < raw + raw_size:
             return header, raw, raw_size, virtual_size
     return None
+
+
+def frame_sites(data: bytes) -> list[tuple[int, int]]:
+    """Patch site and member offset of every frame-pointer build of the routine."""
+    found = []
+    start = data.find(FRAME_HEAD + FRAME_EXPECTED + FRAME_LOAD)
+    while start >= 0:
+        load = start + len(FRAME_HEAD) + len(FRAME_EXPECTED) + len(FRAME_LOAD)
+        if data[load + 1:load + 1 + len(FRAME_CALL)] == FRAME_CALL and data[load] < 0x80:
+            found.append((start + len(FRAME_HEAD), data[load]))
+        start = data.find(FRAME_HEAD + FRAME_EXPECTED + FRAME_LOAD, start + 1)
+    return found
+
+
+def frame_plan(data: bytes) -> tuple[list[tuple[int, int, int]], int, int] | None:
+    """(site, member, trampoline offset) of each routine, section header and new virtual size."""
+    sites = frame_sites(data)
+    if not sites or FRAME_CAVE + len(sites) * FRAME_CAVE_STEP > CAVE_ROOM:
+        return None
+    section = code_section(data, sites[0][0])
+    if section is None:
+        return None
+    header, raw, raw_size, virtual_size = section
+    cave = raw + (virtual_size + CAVE_ALIGNMENT - 1) // CAVE_ALIGNMENT * CAVE_ALIGNMENT
+    if virtual_size > raw_size or cave + CAVE_ROOM > raw + raw_size:
+        return None
+    if any(data[raw + virtual_size:raw + raw_size]):
+        return None  # the padding behind the code is in use
+    if any(not raw <= site < raw + raw_size for site, _ in sites):
+        return None
+    return ([(site, member, cave + FRAME_CAVE + index * FRAME_CAVE_STEP)
+             for index, (site, member) in enumerate(sites)], header, raw_size)
+
+
+def frame_trampoline(site: int, member: int, cave: int) -> bytes:
+    check = bytes.fromhex("8b 45 fc") + bytes((0x83, 0x78, member, 0x00)) + bytes.fromhex(
+        "75 06"            # jne: the pointer is set
+        "33 c0"            # return FALSE
+        "8b e5 5d"         # leave the frame; that discards the five arguments
+        "c3")
+    return check + FRAME_EXPECTED + jump(cave + len(check) + len(FRAME_EXPECTED), site + len(FRAME_EXPECTED))
 
 
 def plan(data: bytes) -> tuple[int, int, int, int] | None:
@@ -106,7 +157,17 @@ def patched(source: bytes) -> bytes:
     if found is None:
         if digest(source) == ORIGINAL_SHA256:
             raise ValueError("patch-site bytes do not match the verified loader")
-        return source
+        frames = frame_plan(source)
+        if frames is None:
+            return source
+        routines, header, virtual_size = frames
+        output = bytearray(source)
+        for site, member, cave in routines:
+            output[site:site + len(FRAME_EXPECTED)] = jump(site, cave)
+            code = frame_trampoline(site, member, cave)
+            output[cave:cave + len(code)] = code
+        struct.pack_into("<I", output, header + 8, virtual_size)
+        return bytes(output)
     site, cave, header, virtual_size = found
     output = bytearray(source)
     output[site:site + len(PATCH_EXPECTED)] = jump(site, cave) + b"\x90\x90"

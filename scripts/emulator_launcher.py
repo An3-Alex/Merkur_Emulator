@@ -615,14 +615,25 @@ class Launcher(tk.Tk):
         return replace(selection, db_key=f"{key:08X}")
 
     def _report_database_version(self, selection: Selection) -> None:
-        """Warn, without refusing, when the bridge's fixed addresses do not fit."""
+        """Say when the database is another build; stop when the bridge cannot find its addresses in it."""
         from m68k_database_bridge import database_hook_mismatches
         from owner_database_runtime import prepare_runtime
         database = Path(selection.database)
         runtime, _report = prepare_runtime(database, file_sha256(database),
                                            d3=int(selection.db_key, 16))
         mismatches = database_hook_mismatches(runtime, Path(selection.loader).read_bytes())
-        if mismatches:
+        if any(group != "loader" for group, _ in mismatches):
+            from firmware_relocation import load_table, resolve
+            moved = resolve(load_table(), runtime)
+            # Product name and build date stand in the clear in the file's head.
+            head = database.read_bytes()[:0x90]
+            name = " ".join(head[0x60:0x79].split(b"\0")[0].decode("ascii", "replace").split())
+            build = head[0x7E:0x85].split(b"\0")[0].decode("ascii", "replace").strip()
+            self.events.put(("line", (
+                f"Hinweis: Datenbank „{name}“ (Stand {build}) erkannt – ein anderer Stand des "
+                f"Datenbankprogramms; die Bridge arbeitet mit dessen Adressen ({len(moved)} automatisch angepasst).\n"
+            )))
+        elif mismatches:
             self.events.put(("line", (
                 "Hinweis: Diese Datenbank-/Loader-Version ist nicht verifiziert. Abweichend: "
                 + ", ".join(name for _, name in mismatches)

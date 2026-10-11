@@ -13,6 +13,7 @@ import patch_loader_null_device as null
 import unittest.mock
 
 VERIFIED_ORIGINALS = guest_files.ORIGINALS
+VERIFIED_GAME_HASH = guest_files.GAME_HASH
 ROUTINE = (null.ROUTINE_HEAD + null.PATCH_EXPECTED + null.ROUTINE_CALL + bytes.fromhex("04 92 42 00")
            + null.ROUTINE_CHECK + bytes.fromhex("10 8b 4e 28 51 e8 90 03 00 00 83 c4 04") + null.ROUTINE_FAILURE)
 
@@ -57,6 +58,39 @@ class LoaderNullDeviceTests(unittest.TestCase):
                 self.assertEqual(null.trampoline_offset(output), cave)
                 self.assertIsNone(null.trampoline_offset(source))
                 self.assertEqual(null.patched(output), output)  # already patched: nothing left to find
+
+    def test_frame_pointer_build_of_the_routine_is_patched_at_every_copy(self):
+        # Another loader version: the pointer is loaded after the arguments,
+        # once for each of two members.
+        def routine(member):
+            return (null.FRAME_HEAD + null.FRAME_EXPECTED + null.FRAME_LOAD + bytes([member]) + null.FRAME_CALL
+                    + bytes.fromhex("34 e2 42 00 8b 55 fc 89 02 8b e5 5d c3"))
+        first, second = 0x1430, 0x1480
+        source = bytearray(loader(first, routine=routine(0x28)))
+        source[second:second + len(routine(0x2C))] = routine(0x2C)
+        source = bytes(source)
+        self.assertIsNone(null.plan(source))
+        output = null.patched(source)
+        cave = 0x1000 + 0x2850 + null.FRAME_CAVE
+        changed = {i for i in range(len(source)) if source[i] != output[i]}
+        allowed = set(range(0x80 + 24 + 0xE0 + 8, 0x80 + 24 + 0xE0 + 12))
+        for index, (start, member) in enumerate(((first, 0x28), (second, 0x2C))):
+            site = start + len(null.FRAME_HEAD)
+            target = cave + index * null.FRAME_CAVE_STEP
+            self.assertEqual(output[site], 0xE9)
+            self.assertEqual(site + 5 + struct.unpack_from("<i", output, site + 1)[0], target)
+            code = null.frame_trampoline(site, member, target)
+            self.assertEqual(output[target:target + len(code)], code)
+            # A null pointer leaves through the frame; a set one pushes the
+            # replaced argument and continues behind the jump.
+            self.assertEqual(code[:9], bytes.fromhex("8b 45 fc 83 78") + bytes([member]) + bytes.fromhex("00 75 06"))
+            self.assertEqual(code[9:15], bytes.fromhex("33 c0 8b e5 5d c3"))
+            self.assertEqual(code[15:20], null.FRAME_EXPECTED)
+            self.assertEqual(target + 25 + struct.unpack_from("<i", code, 21)[0], site + 5)
+            allowed |= set(range(site, site + 5)) | set(range(target, target + len(code)))
+        self.assertLessEqual(changed, allowed)
+        self.assertEqual(struct.unpack_from("<I", output, 0x80 + 24 + 0xE0 + 8)[0], 0x3000)
+        self.assertEqual(null.patched(output), output)
 
     def test_loader_without_the_routine_stays_unchanged(self):
         other = loader(routine=b"\x90" * len(ROUTINE))
@@ -117,12 +151,17 @@ class GuestFileTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.originals = tuple((relative, guest_files.hashlib.sha256(relative.encode()).hexdigest(), label)
                                for relative, _, label in guest_files.ORIGINALS)
-        patcher = unittest.mock.patch.object(guest_files, "ORIGINALS", self.originals)
-        patcher.start(); self.addCleanup(patcher.stop)
+        game = guest_files.hashlib.sha256(b"verified games").hexdigest()
+        for name, value in (("ORIGINALS", self.originals), ("GAME_HASH", game)):
+            patcher = unittest.mock.patch.object(guest_files, name, value)
+            patcher.start(); self.addCleanup(patcher.stop)
         for relative, _, _ in self.originals:
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(relative.encode())
+        for directory in guest_files.GAME_DIRECTORIES:
+            (self.root / directory).mkdir(exist_ok=True)
+            (self.root / directory / "game.exe").write_bytes(b"verified games")
 
     def test_verified_card_needs_no_note(self):
         self.assertEqual(guest_files.original_notes(self.root), [])
@@ -141,11 +180,42 @@ class GuestFileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing file"):
             guest_files.original_notes(self.root)
 
+    def test_game_program_may_be_in_one_folder_only(self):
+        (self.root / "NVRAM/game.exe").unlink()
+        self.assertEqual(guest_files.original_notes(self.root), [])
+        self.assertEqual(guest_files.game_programs(self.root), [self.root / "WorkDir/game.exe"])
+        (self.root / "WorkDir/game.exe").unlink()
+        with self.assertRaisesRegex(ValueError, "missing file"):
+            guest_files.original_notes(self.root)
+
+    def test_check_list_of_a_changed_card_follows_what_the_game_computed(self):
+        listed = b"CheckSumme Datei \\A\\*: 215450391\r\nCheckSumme Game.exe: 404314034\r\nGesamtCheckSumme: 2750957944\r\n"
+        computed = b"CheckSumme Datei \\A\\*: 57914216\r\nCheckSumme Game.exe: 404314034\r\nGesamtCheckSumme: 3050358922\r\n"
+        card, game = self.root / guest_files.CHECK_LIST, self.root / guest_files.CHECK_COMPUTED
+        self.assertFalse(guest_files.check_list_pending(self.root))          # a card without lists
+        card.write_bytes(listed)
+        game.write_bytes(listed)
+        self.assertFalse(guest_files.check_list_pending(self.root))          # the card as it was made
+        # Not a complete list of the same entries: the card's list stays.
+        for other in (computed[:40], computed.replace(b"\\A\\", b"\\B\\"), computed.rsplit(b"\r\n", 2)[0] + b"\r\n",
+                      b"CheckSumme Datei \\A\\*: x\r\nGesamtCheckSumme: 1\r\n"):
+            game.write_bytes(other)
+            self.assertFalse(guest_files.check_list_pending(self.root), other)
+        game.write_bytes(computed)
+        self.assertTrue(guest_files.check_list_pending(self.root))
+        guest_files.adapt_check_list(self.root)
+        self.assertEqual(card.read_bytes(), computed)
+        self.assertEqual(card.with_name(card.name + ".pre-m90").read_bytes(), listed)
+        self.assertFalse(guest_files.check_list_pending(self.root))
+        # A later change keeps the card's first list as the saved one.
+        game.write_bytes(computed.replace(b"57914216", b"57914217"))
+        guest_files.adapt_check_list(self.root)
+        self.assertEqual(card.with_name(card.name + ".pre-m90").read_bytes(), listed)
+
     def test_verified_hashes_are_the_ones_the_updates_use(self):
         import graphics_update
         verified = {relative: value for relative, value, _ in VERIFIED_ORIGINALS}
-        self.assertEqual(verified["NVRAM/game.exe"], graphics_update.GAME_HASH)
-        self.assertEqual(verified["WorkDir/game.exe"], graphics_update.GAME_HASH)
+        self.assertEqual(VERIFIED_GAME_HASH, graphics_update.GAME_HASH)
         self.assertEqual(verified["WINDOWS/explorer.exe"], null.ORIGINAL_SHA256)
 
 

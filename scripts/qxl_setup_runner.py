@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 
+from image_partition import bios_geometry
 from qmp_capture import connect_with_retry
 
 
@@ -18,6 +19,15 @@ VERIFY_OK = b"M90-QXL-VERIFY-OK\n"
 VERIFY_FAILED = b"M90-QXL-VERIFY-FAILED\n"
 
 
+def bios_geometry_options(image: Path) -> list[str]:
+    """The card's own BIOS geometry instead of QEMU's; nothing for a path that is no image."""
+    geometry = bios_geometry(image) if image.is_file() else None
+    if geometry is None:
+        return []
+    return [option for name, value in zip(("lcyls", "lheads", "lsecs"), geometry)
+            for option in ("-global", f"ide-hd.{name}={value}")]
+
+
 def qemu_command(qemu: Path, image: Path, serial_port: int, qmp_port: int, *, swap_displays: bool = False, gpu_runtime: bool = False) -> list[str]:
     primary, secondary = ("lower", "upper") if swap_displays else ("upper", "lower")
     command = [
@@ -25,6 +35,7 @@ def qemu_command(qemu: Path, image: Path, serial_port: int, qmp_port: int, *, sw
         "-cpu", "qemu32,+sse2,model-id=Intel(R) Celeron(R) M CPU 440 @ 1.86GHz",
         "-smp", "1", "-m", "2048", "-drive",
         f"file={image.as_posix()},format=raw,if=ide,index=0,media=disk",
+        *bios_geometry_options(image),
         "-boot", "c", "-vga", "none",
         "-device", f"qxl-vga,id={primary},revision=2,vgamem_mb=64,xres=640,yres=480",
         "-device", f"qxl,id={secondary},revision=2,vgamem_mb=64,xres=640,yres=480",

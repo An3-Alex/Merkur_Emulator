@@ -72,6 +72,10 @@ static bool vector_filter(const Database& db, uint32_t d3) {
     uint8_t i = 0, j = 0, plain[8];
     for (unsigned n = 0; n < 8; ++n)
         plain[n] = uint8_t(db.bytes[kRawPrefix + n] ^ next_byte(state, &i, &j));
+    // The image begins with its vector table. Its second long is the reset
+    // PC, which the plaintext head names at 0x4C; the first, the stack, may
+    // lie beyond the image on boards with more RAM.
+    if (be32(plain + 4) == be32(db.bytes.data() + 0x4C)) return true;
     return plausible_vector(be32(plain), db.end_address) &&
            plausible_vector(be32(plain + 4), db.end_address);
 }

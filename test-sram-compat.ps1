@@ -38,4 +38,16 @@ try {
     & (Join-Path $out 'SERVICE2.EXE')
     if ($LASTEXITCODE -ne 0) { throw "Service harness under another name failed: $LASTEXITCODE" }
     Write-Output 'SERVICE_RENAMED_PASS service recognized by its SRAM import'
+    # The game: recognized by its name, its imports found by name wherever
+    # this version keeps them.
+    $gameExe = Join-Path $project 'tests\game_sram_loader_harness.c'
+    $command = '"' + $devcmd + '" -no_logo -arch=x86 -host_arch=x64 && cl /nologo /TC /O1 /GS- /Zl /D_WIN32_WINNT=0x0501 /DWINVER=0x0501 /Fe:game.exe "' + $gameExe + '" /link /NODEFAULTLIB /ENTRY:mainCRTStartup /SUBSYSTEM:CONSOLE,5.01 kernel32.lib setupapi.lib FBWFLIB.lib'
+    & $env:ComSpec /d /s /c $command
+    if ($LASTEXITCODE -ne 0) { throw 'Game loader harness build failed' }
+    & (Join-Path $out 'game.exe')
+    if ($LASTEXITCODE -ne 0) { throw "Game loader harness failed: $LASTEXITCODE" }
+    if (-not (Select-String -LiteralPath (Join-Path $out 'sram-loader.log') -SimpleMatch 'DllMain: all hooks installed' -Quiet)) {
+        throw 'Game hooks were not installed'
+    }
+    Write-Output 'GAME_LOADER_PASS game imports found by name, Unicode IAT, shared SRAM'
 } finally { Pop-Location }

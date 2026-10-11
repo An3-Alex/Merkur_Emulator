@@ -17,6 +17,7 @@ import struct
 import hashlib
 import math
 import queue
+import re
 import select
 import socket
 import subprocess
@@ -36,7 +37,8 @@ from m68k_qemu_harness import DEFAULT_QEMU, REG_D3, REG_PC, RspClient, M68kRegis
 from capped_log import CappedTextLog, retire_previous
 from cabinet_controls import (
     CabinetControlServer, KEY_IDS, KEY_TABLE_BASE, KEY_TABLE_PROFILES,
-    KEY_TABLE_STRIDE, KEY_CURRENT_BASE, KEY_EVENT_BASE, format_tablet_packet, key_location,
+    KEY_TABLE_STRIDE, KEY_CURRENT_BASE, KEY_EVENT_BASE, OPTIONAL_KEYS, format_tablet_packet,
+    key_active_high, key_location,
 )
 from owner_config_runtime import CONFIG_CLEAR_START, prepare_config_writes, prepare_factory_runtime
 from owner_database_runtime import prepare_runtime
@@ -146,6 +148,19 @@ AUX_TRANSACTION_LENGTH = 0x001E2B13
 AUX_RESPONSE_CHECK_PC = 0x0006D7DC
 AUX_PROFILE_RESPONSE_CHECK_PC = 0x0006D9BA
 AUX_VALUE_RESPONSE_CHECK_PC = 0x0006DB5A
+# The database also writes the card: one that was never in a machine gets
+# its number at 0x28 and four bytes at 0x0D.  0x35 and 0x36 write and read a
+# byte at 0x20..0x3F in the clear; 0x33 announces a protected write of a
+# byte at 0x00..0x3F and 0x39 carries it out.  The check behind each of them
+# only wants the card's acknowledgement; index and value are still in D7/D6.
+AUX_WRITE_ANNOUNCE_CHECK_PC = 0x0006DC44
+AUX_PROTECTED_WRITE_CHECK_PC = 0x0006DCB0
+AUX_PLAIN_READ_CHECK_PC = 0x0006DD40
+AUX_PLAIN_WRITE_CHECK_PC = 0x0006DE06
+AUX_MEMORY_COMMANDS = {
+    AUX_WRITE_ANNOUNCE_CHECK_PC: 0x33, AUX_PROTECTED_WRITE_CHECK_PC: 0x39,
+    AUX_PLAIN_READ_CHECK_PC: 0x36, AUX_PLAIN_WRITE_CHECK_PC: 0x35,
+}
 COIN_ENTRY_PORT = 0x00800141
 COIN_ENTRY_READ_PC = 0x0001678E
 COIN_ENTRY_MASK = 0x40
@@ -234,6 +249,21 @@ def virtual_aux_value_reply(
     if value is None:
         return None
     return encode_aux_packet(challenge.to_bytes(4, "big") + bytes([value]))
+
+
+def virtual_aux_memory_access(
+    card_eeprom: bytearray, command: int, index: int, value: int
+) -> int | None:
+    """Carry out a write or a plain read on the card's memory of this run.
+
+    Returns the byte a plain read delivers.  The selected file is never
+    changed: the next start begins with the card as it was selected.
+    """
+    if command in (0x35, 0x39):
+        card_eeprom[index] = value
+    return card_eeprom[index] if command == 0x36 else None
+
+
 # The cabinet door switch is the external input on bit 4.  The original
 # accessor at 0x603F0 returns active when this bit is clear; its callers enter
 # the service handling path in that state.  A closed/pressed door switch is
@@ -1141,6 +1171,11 @@ def initvideo_retry_confirmed(
     return systeminfo_seen
 
 
+# The game answers with the name of its CF card, the text of CFversion.txt:
+# M90-C0-T0-V10-P56_…, M88-C0-T0-V5-P61_…
+GUEST_SYSTEMINFO = re.compile(rb"M\d{2,3}-C")
+
+
 class RestartedGuestHandshake:
     """Bring a game PC that started again back into the startup handshake.
 
@@ -1212,7 +1247,7 @@ class RestartedGuestHandshake:
         if not self.collecting or not self.reply or now - self.reply_at < self.QUIET_SECONDS:
             return None
         self.collecting = False
-        if b"M90-" in self.reply:
+        if GUEST_SYSTEMINFO.search(self.reply):
             # The system info itself: it belongs to the firmware.
             pending.extendleft(reversed(self.reply))
             self.reply.clear()
@@ -1221,10 +1256,10 @@ class RestartedGuestHandshake:
 
 
 def observe_guest_systeminfo(tail: bytearray, value: int) -> bool:
-    """Detect the M90 system-info prefix across COM3 receive boundaries."""
+    """Detect the start of the system info across COM3 receive boundaries."""
     tail.append(value & 0xFF)
-    del tail[:-4]
-    return tail == b"M90-"
+    del tail[:-6]
+    return GUEST_SYSTEMINFO.search(tail) is not None and tail.endswith(b"-C")
 
 
 def idle_protocol_diagnostic_due(
@@ -1491,7 +1526,7 @@ def publish_cabinet_buttons(
     mappings = mapping_cache[profile]
     locations = {name: key_location(mapping) for name, mapping in mappings.items()}
     for name in pressed:
-        if locations[name] is None:
+        if locations[name] is None and name not in OPTIONAL_KEYS:
             raise RuntimeError(f"unsupported mapping for pressed {name}: {mappings[name]:04X}")
     addresses = [location[0] for location in locations.values() if location is not None]
     # Include the independently released return contact even if another
@@ -1514,11 +1549,16 @@ def publish_cabinet_buttons(
             continue  # already released above
         location = locations[name]
         if location is None:
+            pending_edges.discard(name)  # this cabinet has no such key
             continue
+        if (name in OPTIONAL_KEYS and name not in pressed and name not in pending_edges
+                and (released is None or name not in released)):
+            continue  # not in use: as the board delivers it
         current_address, event_address, mask = location
         index = current_address - start
         current = current_bytes[index]
-        current_bytes[index] = current & ~mask if name in pressed else current | mask
+        low = (name in pressed) != key_active_high(mappings[name])
+        current_bytes[index] = current & ~mask if low else current | mask
         event = event_bytes[event_address - event_start]
         if name in pending_edges:
             desired_event = event | mask
@@ -2287,9 +2327,9 @@ def read_rtc_fault_snapshot(rsp: RspClient, when: dt.datetime) -> str:
 
 
 # Code and table locations the bridge uses by address belong to the verified
-# CC4 runtime and loader L5.0b. Another database build can place them
-# elsewhere; a mismatch is reported, not refused, so other packages can be
-# tried. Each digest covers the address and its first HOOK_WINDOW bytes.
+# CC4 runtime and loader L5.0b. Another database build places them elsewhere:
+# firmware_relocation finds them there, or the start stops. Each digest covers
+# the address and its first HOOK_WINDOW bytes.
 VERIFIED_RUNTIME_SHA256 = "4E6D0FD7148FD66639687CB79714FF2F6BB663DFE4D9CF420E4194E44337E177"
 HOOK_WINDOW = 8
 DATABASE_HOOK_GROUPS = (
@@ -2313,8 +2353,9 @@ DATABASE_HOOK_GROUPS = (
      "2f7a39a8b707ac8d"),
     ("coin", "Münzeingang", "runtime", (COIN_ENTRY_READ_PC,), "5669ed53b76b6a6c"),
     ("card", "Zulassungskarte", "runtime",
-     (AUX_RESPONSE_CHECK_PC, AUX_PROFILE_RESPONSE_CHECK_PC, AUX_VALUE_RESPONSE_CHECK_PC),
-     "d858339d5e5a1efb"),
+     (AUX_RESPONSE_CHECK_PC, AUX_PROFILE_RESPONSE_CHECK_PC, AUX_VALUE_RESPONSE_CHECK_PC,
+      *sorted(AUX_MEMORY_COMMANDS)),
+     "417de95f706c3496"),
     ("hopper", "Hopper", "runtime",
      (BOARD_SCAN_COMPLETE_PC, *sorted(HOPPER_QUEUE_WAIT_PCS)), "2258e86fb1bbbd5a"),
     ("touch", "Touch", "runtime",
@@ -2342,8 +2383,9 @@ def run_bridge(args: argparse.Namespace) -> int:
     validate_timer_interval(args.timer_interval)
     admission_eeprom = None
     if args.admission_eeprom is not None:
-        admission_eeprom = args.admission_eeprom.read_bytes()
-        admission_number, card_model = inspect_eeprom(admission_eeprom)
+        admission_eeprom = bytearray(args.admission_eeprom.read_bytes())
+        admission_number, card_model = inspect_eeprom(bytes(admission_eeprom))
+    if admission_eeprom is not None and not getattr(args, "addresses_adapted", 0):
         print(
             "DB_ADMISSION_CARD_LOADED "
             f"number_ending={admission_number[-4:]} "
@@ -2367,6 +2409,15 @@ def run_bridge(args: argparse.Namespace) -> int:
         d3=args.d3,
         runtime_dump_path=args.runtime_dump,
     )
+    hook_mismatches = database_hook_mismatches(runtime, loader)
+    if (any(group != "loader" for group, _ in hook_mismatches)
+            and not getattr(args, "addresses_adapted", 0)):
+        # Another build of the database program: the same bridge, working on
+        # the places its addresses have there.  What cannot be found stops here.
+        from firmware_relocation import load_table, relocated_bridge, resolve
+        moved = resolve(load_table(), runtime)
+        args.addresses_adapted = len(moved)
+        return relocated_bridge(moved).run_bridge(args)
     config_writes, config_digest = prepare_config_writes(
         args.config, args.expected_config_sha256,
         args.d3 if args.d3 is not None else 0xD27B7159,
@@ -2388,8 +2439,9 @@ def run_bridge(args: argparse.Namespace) -> int:
         flush=True,
     )
     initvideo_strict = runtime_report["runtime_sha256"] == VERIFIED_RUNTIME_SHA256
-    hook_mismatches = database_hook_mismatches(runtime, loader)
-    if hook_mismatches:
+    if getattr(args, "addresses_adapted", 0):
+        print(f"DB_VERSION_ADDRESSES_ADAPTED addresses={args.addresses_adapted}", flush=True)
+    elif hook_mismatches:
         print(
             "DB_VERSION_UNVERIFIED "
             f"groups={','.join(group for group, _ in hook_mismatches)} "
@@ -2554,7 +2606,7 @@ def run_bridge(args: argparse.Namespace) -> int:
             reported_unknown_touch_commands = set()
             pressed_buttons: set[str] = set()
             pending_button_edges: set[str] = set()
-            released_buttons: set[str] = set(KEY_IDS)
+            released_buttons: set[str] = set(KEY_IDS) - OPTIONAL_KEYS
             release_after_scans: dict[str, int] = {}
             button_run_budgets: dict[str, CpuRunBudget] = {}
             button_mapping_cache: dict[int, dict[str, int]] = {}
@@ -3302,6 +3354,31 @@ def run_bridge(args: argparse.Namespace) -> int:
                                 )
                         step_past_breakpoint(rsp, pc)
                         continue
+                    if pc in AUX_MEMORY_COMMANDS:
+                        command = rsp.read_memory(AUX_TRANSACTION_COMMAND, 1)[0]
+                        if admission_eeprom is not None and command == AUX_MEMORY_COMMANDS[pc]:
+                            index = rsp.read_register_u32(REG_D7) & 0xFF
+                            value = rsp.read_register_u32(REG_D6) & 0xFF
+                            read = virtual_aux_memory_access(
+                                admission_eeprom, command, index, value
+                            )
+                            if read is not None:
+                                rsp.write_memory(AUX_TRANSACTION_DATA, bytes([read]))
+                            status = rsp.read_memory(AUX_PROFILE_STATUS, 1)[0]
+                            rsp.write_memory(
+                                AUX_PROFILE_STATUS,
+                                bytes([(status & 0xFC) | 3]),
+                            )
+                            if command != 0x33:
+                                print(
+                                    "DB_VIRTUAL_AUX_MEMORY "
+                                    f"command={command:02X} "
+                                    f"index={index:02X} "
+                                    f"value={admission_eeprom[index]:02X}",
+                                    flush=True,
+                                )
+                        step_past_breakpoint(rsp, pc)
+                        continue
                     if pc == VirtualCoinValidator.PAIRING_READ_PC:
                         reconciliation = coin_validator.reconcile_pairing_receive_buffer(rsp)
                         if reconciliation is not None:
@@ -3684,6 +3761,8 @@ def run_bridge(args: argparse.Namespace) -> int:
                         set_watchpoint(
                             rsp, 0, AUX_VALUE_RESPONSE_CHECK_PC, True
                         )
+                        for memory_check_pc in sorted(AUX_MEMORY_COMMANDS):
+                            set_watchpoint(rsp, 0, memory_check_pc, True)
                         scan_jsr_target = absolute_jsr_target(
                             rsp.read_memory(BOARD_SCAN_COMPLETE_PC, 6)
                         )
@@ -4147,7 +4226,8 @@ def run_bridge(args: argparse.Namespace) -> int:
                     ):
                         guest_systeminfo_seen = True
                         print(
-                            "DB_INITVIDEO_GUEST_SYSTEMINFO prefix=M90-",
+                            "DB_INITVIDEO_GUEST_SYSTEMINFO prefix="
+                            + GUEST_SYSTEMINFO.search(guest_systeminfo_tail).group()[:-1].decode("ascii"),
                             flush=True,
                         )
                     last_uart_activity_at = time.monotonic()

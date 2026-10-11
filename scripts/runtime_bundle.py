@@ -33,6 +33,10 @@ SHELL_FILES = (
     "stage_qemu3dfx.sh",
     "stage_loader_idle.sh",
 )
+# Where the bridge finds its addresses in another build of the database program.
+DATA_FILES = (
+    "firmware_addresses.json",
+)
 REQUIRED_PYTHON_FILES = (
     "audio_legacy_driver.py",
     "image_partition.py",
@@ -50,6 +54,7 @@ REQUIRED_PYTHON_FILES = (
     "patch_loader_null_device.py",
     "loader_idle.py",
     "event_log_viewer.py",
+    "firmware_relocation.py",
     "image_setup.py",
     "inspect_owner_database.py",
     "m68k_database_bridge.py",
@@ -112,7 +117,8 @@ def runtime_payload(source: Path) -> list[tuple[Path, Path]]:
         for path in sorted((source / "scripts").glob("*.py"))
         if path.name not in RETIRED_PYTHON_FILES
     )
-    files.extend((source / "scripts" / name, Path("scripts") / name) for name in SHELL_FILES)
+    files.extend((source / "scripts" / name, Path("scripts") / name)
+                 for name in (*SHELL_FILES, *DATA_FILES))
     files.extend((source / relative, relative) for relative in OWN_BINARIES)
     gpu = source / "build/qemu3dfx-runtime"
     if gpu.exists():

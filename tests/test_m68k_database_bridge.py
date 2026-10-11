@@ -235,6 +235,26 @@ class DatabaseBridgeTests(unittest.TestCase):
             )
             self.assertEqual(reply, challenge.to_bytes(4, "big") + bytes([expected]))
 
+    def test_database_can_write_a_new_card(self) -> None:
+        from admission_card import build_m90_eeprom
+
+        selected = build_m90_eeprom(bytes(256), "123456789")
+        card = bytearray(selected)
+        # The number goes to 0x28 between two markers at 0x20, in the clear.
+        self.assertIsNone(bridge.virtual_aux_memory_access(card, 0x35, 0x20, 0xFE))
+        self.assertEqual(bridge.virtual_aux_memory_access(card, 0x36, 0x20, 0), 0xFE)
+        self.assertIsNone(bridge.virtual_aux_memory_access(card, 0x35, 0x20, 0x00))
+        # Announcing a protected write changes nothing; the write itself does.
+        self.assertIsNone(bridge.virtual_aux_memory_access(card, 0x33, 0x0D, 0x2E))
+        self.assertEqual(card, selected)
+        for index, value in zip(range(0x0D, 0x11), bytes.fromhex("08 12 2E 07")):
+            self.assertIsNone(bridge.virtual_aux_memory_access(card, 0x39, index, value))
+            reply = bridge.decode_aux_packet(bridge.virtual_aux_value_reply(0x12345678, index, card))
+            self.assertEqual(reply[4], value)                 # read back as written
+        self.assertEqual(selected[0x0D:0x11], bytes(4))         # the selected card stays as it is
+        # Every command is taken at the check behind its own transaction.
+        self.assertEqual(sorted(bridge.AUX_MEMORY_COMMANDS.values()), [0x33, 0x35, 0x36, 0x39])
+
     def test_virtual_coin_validator_identity_and_scc_end_of_frame(self) -> None:
         device = bridge.VirtualCoinValidator()
         self.assertEqual(device.status(), bridge.BOARD_SCC_IDLE_STATUS)
@@ -606,9 +626,18 @@ class DatabaseBridgeTests(unittest.TestCase):
             "later", response_pending=True, systeminfo_seen=False,
         ))
         tail = bytearray()
-        for byte in b"\x06\x03\x00\x00\x07\x38O\x00M90":
+        for byte in b"\x06\x03\x00\x00\x07\x38O\x00M90-":
             self.assertFalse(bridge.observe_guest_systeminfo(tail, byte))
-        self.assertTrue(bridge.observe_guest_systeminfo(tail, ord("-")))
+        self.assertTrue(bridge.observe_guest_systeminfo(tail, ord("C")))
+        self.assertFalse(bridge.observe_guest_systeminfo(tail, ord("0")))
+        # Other cabinets name themselves the same way: M88-C0-…, M202-C0-…
+        for text in (b"\x07\x1bO\x00M88-C", b"\x00M202-C"):
+            other = bytearray()
+            self.assertEqual([bridge.observe_guest_systeminfo(other, byte) for byte in text],
+                             [False] * (len(text) - 1) + [True])
+        for text in (b"M9-C0", b"MAGIE-C", b"\x06\x03\x00\x00\x02\x01\x85\x2D"):
+            other = bytearray()
+            self.assertFalse(any(bridge.observe_guest_systeminfo(other, byte) for byte in text))
         self.assertTrue(bridge.initvideo_retry_confirmed(
             "later", response_pending=False, systeminfo_seen=True,
         ))
@@ -1760,7 +1789,8 @@ class DatabaseVersionTests(unittest.TestCase):
         for address in (bridge.COIN_ENTRY_READ_PC, bridge.UART_INIT_ENTRY, bridge.RTC_FAULT_ENTRY,
                         bridge.BOARD_TIMER_RTE_PC, bridge.VirtualCoinValidator.PAIRING_COMPARE_PC,
                         *bridge.TX_STATUS_OVERLAP_STOP_PCS, *bridge.HOPPER_QUEUE_WAIT_PCS,
-                        *bridge.DEVICE_DISCOVERY_TIMER_WAIT_PCS, *bridge.BOARD_LATCH_FEEDBACK_BY_STOP_PC):
+                        *bridge.DEVICE_DISCOVERY_TIMER_WAIT_PCS, *bridge.BOARD_LATCH_FEEDBACK_BY_STOP_PC,
+                        *bridge.AUX_MEMORY_COMMANDS):
             self.assertIn(address, covered)
 
     def test_other_database_keeps_its_initvideo_identity(self):

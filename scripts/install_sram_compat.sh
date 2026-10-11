@@ -11,7 +11,8 @@ image=$(realpath "$1")
 proxy=$2
 source "$(dirname -- "$0")/working_image_guard.sh"
 require_working_image "$image" || exit 3
-expected_proxy=555f2a7b6e886e9476b7f83ecee89c3cfa369c823f82f5bdf4c6181c7ce41dd2
+expected_proxy=4b6445c874c7495b88bc0c7cb138741fcc7fd6ca1944afbcd077aa1eb6d320cf
+legacy_proxy_v7=555f2a7b6e886e9476b7f83ecee89c3cfa369c823f82f5bdf4c6181c7ce41dd2
 legacy_proxy_v6=4b98b1f2a60e939e1dc40c135e73edb47805249493d566e3f0599106f21ed608
 legacy_proxy_v5=31cac0b2141d2c8896e9dcf5cc2bd19ea0e3e0e1196625b9a79645d1edc6c9d6
 legacy_proxy_service=4d62ee6e183ba534f7ac7d2780d4a5fb90f2394bc4fc68fd6d6b9ea640b3aa94
@@ -59,8 +60,8 @@ for directory in NVRAM WorkDir; do
   target="$mount_dir/$directory/FBWFLIB.dll"
   if [[ -f "$target" ]]; then
     current_hash=$(sha256sum "$target" | awk '{print $1}')
-    [[ "$current_hash" == "$expected_proxy" || "$current_hash" == "$legacy_proxy_v6" || \
-       "$current_hash" == "$legacy_proxy_v5" || \
+    [[ "$current_hash" == "$expected_proxy" || "$current_hash" == "$legacy_proxy_v7" || \
+       "$current_hash" == "$legacy_proxy_v6" || "$current_hash" == "$legacy_proxy_v5" || \
        "$current_hash" == "$legacy_proxy_service" || \
        "$current_hash" == "$legacy_proxy_runtime" || \
        "$current_hash" == "$legacy_proxy_v4" || \

@@ -300,6 +300,8 @@ class BridgeLogParser:
             suffix = f": {names.group(1)}" if names else ""
             events.append(Event("Status", f"Datenbankversion nicht verifiziert, abweichend{suffix}",
                                 line, "warning"))
+        elif line.startswith("DB_VERSION_ADDRESSES_ADAPTED"):
+            events.append(Event("Status", "Andere Datenbankversion: Bridge-Adressen automatisch angepasst", line))
         elif line.startswith("DB_VERSION_HOOKS_VERIFIED"):
             events.append(Event("Status", "Datenbankversion passt zu den Bridge-Adressen", line))
         elif line.startswith("DB_AUX_TRANSACTION_START"):
@@ -310,6 +312,13 @@ class BridgeLogParser:
             command = re.search(r"command=([0-9A-F]{2})", line)
             code = command.group(1) if command else "??"
             events.append(Event("Board → DB", f"Nebengeräte-Antwort {code}", line))
+        elif line.startswith("DB_VIRTUAL_AUX_MEMORY"):
+            access = re.search(r"command=([0-9A-F]{2}) index=([0-9A-F]{2}) value=([0-9A-F]{2})", line)
+            command, index, value = access.groups() if access else ("??", "??", "??")
+            if command == "36":
+                events.append(Event("Board → DB", f"Zulassungskarte gelesen: Byte {index} = {value}", line))
+            else:
+                events.append(Event("DB → Board", f"Zulassungskarte beschrieben: Byte {index} = {value}", line))
         elif line.startswith("DB_CABINET_BUTTON_QUEUED"):
             events.append(Event("Bedienfeld → DB", "Tasteneingabe vorgemerkt; wartet auf Board-Scan", line))
         elif line.startswith("DB_CABINET_DOOR_QUEUED"):

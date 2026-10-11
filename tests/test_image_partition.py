@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from image_partition import ImageVolume, locate_ntfs
+from image_partition import ImageVolume, bios_geometry, locate_ntfs
 
 
 def table(*entries):
@@ -46,6 +46,41 @@ class PartitionTests(unittest.TestCase):
                 file = self.fixture(Path(directory), total, [(0, table((7, start, count))),
                                                              (start, boot(count))])
                 self.assertEqual(locate_ntfs(file), ImageVolume(start * 512, count * 512))
+
+    def test_bios_geometry_is_the_one_the_card_was_formatted_with(self):
+        # A 4-GB card formatted with 255 heads: QEMU's BIOS would use 128 and
+        # the XP boot sector would stop with "A disk read error occurred".
+        # Scaled down here: four cylinders of 255 heads and 63 sectors.
+        def card(root, total, sectors_per_track, heads):
+            data = boot(total - 100)
+            struct.pack_into("<HH", data, 24, sectors_per_track, heads)
+            return self.fixture(root, total, [(0, table((7, 63, total - 63))), (63, data)])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(bios_geometry(card(root, 4 * 255 * 63 + 500, 63, 255)), (4, 255, 63))
+            # The BIOS interface ends at cylinder 1024, as on cards above 8 GB.
+            self.assertEqual(bios_geometry(card(root, 2048 * 2 * 4, 4, 2)), (1024, 2, 4))
+            self.assertEqual(bios_geometry(card(root, 16384, 32, 16)), (32, 16, 32))
+            for sectors_per_track, heads in ((0, 255), (63, 0), (64, 255), (63, 256)):
+                self.assertIsNone(bios_geometry(card(root, 16384, sectors_per_track, heads)))
+            tool = Path(__file__).resolve().parents[1] / "scripts/image_partition.py"
+            result = subprocess.run([sys.executable, str(tool), "--bios-geometry",
+                                     str(card(root, 4 * 255 * 63 + 500, 63, 255))],
+                                    capture_output=True, text=True)
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, "4 255 63"))
+
+    def test_setup_guest_gets_the_card_geometry(self):
+        import qxl_setup_runner as runner
+        with tempfile.TemporaryDirectory() as directory:
+            total = 4 * 255 * 63 + 500
+            data = boot(total - 100)
+            struct.pack_into("<HH", data, 24, 63, 255)
+            card = self.fixture(Path(directory), total, [(0, table((7, 63, total - 63))), (63, data)])
+            command = runner.qemu_command(Path("qemu.exe"), card, 4554, 4446)
+            for option in ("ide-hd.lcyls=4", "ide-hd.lheads=255", "ide-hd.lsecs=63"):
+                self.assertEqual(command[command.index(option) - 1], "-global")
+            # A path that is no image (dry runs) adds nothing.
+            self.assertNotIn("-global", runner.qemu_command(Path("qemu.exe"), Path(directory) / "absent.img", 4554, 4446))
 
     def test_ntfs_whole_volume(self):
         with tempfile.TemporaryDirectory() as directory:

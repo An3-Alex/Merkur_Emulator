@@ -17,8 +17,10 @@ SERVICE_HASH = "d9d04e9b70bf0fc6ec3dd4e57624940b107881067b4d1952f581bfc12befa2c8
 # recognized by its import (an 8.3-named service got no SRAM and crashed).
 PREVIOUS_SRAM_HASHES = {"4d62ee6e183ba534f7ac7d2780d4a5fb90f2394bc4fc68fd6d6b9ea640b3aa94",
                         "31cac0b2141d2c8896e9dcf5cc2bd19ea0e3e0e1196625b9a79645d1edc6c9d6",
-                        "4b98b1f2a60e939e1dc40c135e73edb47805249493d566e3f0599106f21ed608"}  # before the 10-MB guest log limit
-SRAM_HASH = "555f2a7b6e886e9476b7f83ecee89c3cfa369c823f82f5bdf4c6181c7ce41dd2"
+                        "4b98b1f2a60e939e1dc40c135e73edb47805249493d566e3f0599106f21ed608",  # before the 10-MB guest log limit
+                        # found the game's imports at the verified version's addresses only
+                        "555f2a7b6e886e9476b7f83ecee89c3cfa369c823f82f5bdf4c6181c7ce41dd2"}
+SRAM_HASH = "4b6445c874c7495b88bc0c7cb138741fcc7fd6ca1944afbcd077aa1eb6d320cf"
 SERVICE_PATH = "WorkDir/GGSG_Servic/GGSG_Servic.exe"
 # The service program requests its data from the database through the game
 # and shows "FEHLER : keine Daten" when they are not complete in time: 60 s for

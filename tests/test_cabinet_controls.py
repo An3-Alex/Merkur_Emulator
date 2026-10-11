@@ -14,7 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from cabinet_controls import (
     CabinetControlServer, KEY_CURRENT_BASE, KEY_EVENT_BASE, KEY_IDS,
-    KEY_TABLE_BASE, format_tablet_packet, key_location, send_command,
+    KEY_TABLE_BASE, format_tablet_packet, key_active_high, key_location, send_command,
     validate_command,
 )
 from cabinet_control_panel import ControlPanel, qmp_screendump
@@ -62,7 +62,7 @@ class MemoryRsp:
         mappings = {
             "menu": 0x1065, "autostart": 0x1005, "einsatz": 0x1067,
             "maxeinsatz": 0x1006, "start": 0x1026,
-            "auszahlung": 0x1023, "service": 0x1025,
+            "auszahlung": 0x1023, "automatik": 0x1022, "service": 0x1025,
         }
         for name, mapping in mappings.items():
             self.write_memory(KEY_TABLE_BASE + KEY_IDS[name] * 2,
@@ -97,6 +97,46 @@ class CabinetControlTests(unittest.TestCase):
             publish_cabinet_buttons(rsp, {"service"}, set(), mapping_cache=cache)
         self.assertEqual(read.call_count, 3)  # profile and two input banks
         self.assertLessEqual(write.call_count, 2)
+
+    def test_every_panel_key_is_visible_in_its_own_cell(self) -> None:
+        cells = [panel_module.button_cell(index) for index in range(len(panel_module.BUTTONS))]
+        self.assertEqual(len(set(cells)), len(panel_module.BUTTONS))
+        self.assertNotIn(panel_module.COIN_BUTTON_CELL, cells)   # the coin once hid the service key
+        self.assertTrue(all(column < panel_module.BUTTON_COLUMNS for _, column in cells))
+        self.assertEqual({name for _, name in panel_module.BUTTONS}, set(KEY_IDS))
+
+    def test_key_only_some_cabinets_have_is_touched_only_while_used(self) -> None:
+        for mapping, pressed_level, released_level in ((0x1022, 0x00, 0x10), (0x9022, 0x10, 0x00)):
+            with self.subTest(mapping=f"{mapping:04X}"):
+                rsp = MemoryRsp()
+                rsp.write_memory(KEY_TABLE_BASE + KEY_IDS["automatik"] * 2, mapping.to_bytes(2, "big"))
+                current, event, mask = key_location(mapping)
+                self.assertEqual(mask, 0x10)
+                # Unused: whatever the board delivers stays, set or clear.
+                for delivered in (0x00, 0xFF):
+                    rsp.write_memory(current, bytes([delivered]))
+                    rsp.write_memory(event, bytes([delivered]))
+                    publish_cabinet_buttons(rsp, set(), set(), set())
+                    self.assertEqual((rsp.data[current], rsp.data[event]), (delivered, delivered))
+                # Pressed: the level this cabinet reads as pressed, with one edge.
+                rsp.write_memory(current, bytes([released_level]))
+                rsp.write_memory(event, b"\x00")
+                edges = {"automatik"}
+                publish_cabinet_buttons(rsp, {"automatik"}, edges, set())
+                self.assertEqual((rsp.data[current] & mask, rsp.data[event] & mask), (pressed_level, mask))
+                self.assertEqual(edges, set())
+                # Released: back to the other level once, then left alone again.
+                publish_cabinet_buttons(rsp, set(), set(), {"automatik"})
+                self.assertEqual((rsp.data[current] & mask, rsp.data[event] & mask), (released_level, 0))
+        # A cabinet without the key: a press is dropped, nothing fails.
+        rsp = MemoryRsp()
+        rsp.write_memory(KEY_TABLE_BASE + KEY_IDS["automatik"] * 2, b"\x00\x00")
+        edges = {"automatik"}
+        publish_cabinet_buttons(rsp, {"automatik"}, edges, set())
+        self.assertEqual(edges, set())
+        with self.assertRaisesRegex(RuntimeError, "unsupported mapping"):
+            rsp.write_memory(KEY_TABLE_BASE + KEY_IDS["start"] * 2, b"\x00\x00")
+            publish_cabinet_buttons(rsp, {"start"}, {"start"}, set())
 
     def test_preview_touch_deduplicates_press_and_recovers_missed_release(self) -> None:
         panel = ControlPanel.__new__(ControlPanel)
@@ -186,7 +226,14 @@ class CabinetControlTests(unittest.TestCase):
     def test_original_key_location_resolves_current_and_edge(self) -> None:
         self.assertEqual(key_location(0x1023),
                          (KEY_CURRENT_BASE + 0x23, KEY_EVENT_BASE + 0x23, 0x10))
-        self.assertIsNone(key_location(0x9022))
+        # Bit 15 turns the level round (accessor at 0x6010C): the same switch,
+        # pressed while its bit is set.
+        self.assertEqual(key_location(0x9022),
+                         (KEY_CURRENT_BASE + 0x22, KEY_EVENT_BASE + 0x22, 0x10))
+        self.assertTrue(key_active_high(0x9022))
+        self.assertFalse(key_active_high(0x1022))
+        self.assertIsNone(key_location(0x0000))
+        self.assertIsNone(key_location(0x1880))
 
     def test_buttons_press_edge_hold_and_release(self) -> None:
         rsp = MemoryRsp()

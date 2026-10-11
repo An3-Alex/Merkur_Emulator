@@ -19,9 +19,9 @@ ORIGINALS = (
     ("WINDOWS/explorer.exe", "2fb4233b541431a1b940ed5af6f11096b7fd5846316e3c4e55bd0e9a7b37a5c1", "Loader"),
     ("WINDOWS/system32/fbwflib.dll", "17dc9581c25b9c77d2d4368c3923f83e414d6be9a8acf675871ff2ce6df28263",
      "Schreibfilter-Bibliothek"),
-    ("NVRAM/game.exe", GAME_HASH, "Spielprogramm"),
-    ("WorkDir/game.exe", GAME_HASH, "Spielprogramm"),
 )
+# The verified card keeps the game program in both folders, others only in one.
+GAME_DIRECTORIES = ("NVRAM", "WorkDir")
 
 
 def sha256(path: Path) -> str:
@@ -42,14 +42,59 @@ def note(path: Path, verified: set[str], label: str) -> str | None:
     return f"Hinweis: {label} ({path.name}) ist eine nicht verifizierte Version ({actual[:16]}…)."
 
 
+def game_programs(root: Path) -> list[Path]:
+    """The game program of this card, from every folder that holds one."""
+    found = [root / directory / "game.exe" for directory in GAME_DIRECTORIES]
+    found = [path for path in found if path.is_file()]
+    if not found:
+        raise ValueError(f"missing file: {root / GAME_DIRECTORIES[-1] / 'game.exe'}")
+    return found
+
+
 def original_notes(root: Path) -> list[str]:
     """Notes for an untouched CF image; a missing file means it is not such an image."""
     notes = []
-    for relative, verified, label in ORIGINALS:
-        line = note(root / relative, {verified}, label)
+    checks = [(root / relative, verified, label) for relative, verified, label in ORIGINALS]
+    checks += [(path, GAME_HASH, "Spielprogramm") for path in game_programs(root)]
+    for path, verified, label in checks:
+        line = note(path, {verified}, label)
         if line is not None and line not in notes:
             notes.append(line)
     return notes
+
+
+# At every start the game writes the list it computes over its data (file
+# sizes per folder and more) to NVRAM and compares it with the list on the
+# card.  A card whose game data were changed later keeps its old list and
+# stops with SYSTEM ERROR 28.
+CHECK_LIST = "WorkDir/CheckSumAdpConfigTool.txt"
+CHECK_COMPUTED = "NVRAM/CheckTemp.txt"
+
+
+def _check_entries(path: Path) -> list[tuple[bytes, bytes]] | None:
+    """(label, value) of every line, or None when this is no complete list."""
+    if not path.is_file():
+        return None
+    entries = [line.rpartition(b": ") for line in path.read_bytes().split(b"\r\n") if line]
+    complete = entries and entries[-1][0].startswith(b"GesamtCheckSumme")
+    if not complete or any(not label or not value.strip().isdigit() for label, _, value in entries):
+        return None
+    return [(label, value) for label, _, value in entries]
+
+
+def check_list_pending(root: Path) -> bool:
+    """The game computed a complete list with other values than the card's list holds."""
+    computed, listed = _check_entries(root / CHECK_COMPUTED), _check_entries(root / CHECK_LIST)
+    return (computed is not None and listed is not None and computed != listed
+            and [label for label, _ in computed] == [label for label, _ in listed])
+
+
+def adapt_check_list(root: Path) -> None:
+    """Give the working copy the list the game computed; the card's list is kept beside it."""
+    listed, saved = root / CHECK_LIST, root / (CHECK_LIST + ".pre-m90")
+    if not saved.exists():
+        saved.write_bytes(listed.read_bytes())
+    listed.write_bytes((root / CHECK_COMPUTED).read_bytes())
 
 
 if __name__ == "__main__":

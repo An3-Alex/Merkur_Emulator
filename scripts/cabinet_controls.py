@@ -23,8 +23,12 @@ KEY_IDS = {
     "maxeinsatz": 5,
     "start": 6,
     "auszahlung": 9,  # Rueckgabe
+    "automatik": 10,  # Spielstart-Automatik
     "service": 11,    # Schlossschalter / service switch
 }
+# Keys only some cabinets have.  Their switch stays as the board delivers it
+# except while the key is used, so a cabinet without it behaves as before.
+OPTIONAL_KEYS = frozenset({"automatik"})
 KEY_TABLE_BASE = 0x0005B942
 KEY_TABLE_STRIDE = 0x20
 KEY_TABLE_PROFILES = 13
@@ -89,10 +93,15 @@ def format_tablet_packet(x: int, y: int, down: bool) -> bytes:
 
 def key_location(mapping: int) -> tuple[int, int, int] | None:
     """Resolve a firmware mapping word into current/event bytes and bit."""
-    mask, offset = mapping >> 8, mapping & 0xFF
+    mask, offset = mapping >> 8 & 0x7F, mapping & 0xFF
     if mask == 0 or mask & (mask - 1) or offset >= 0x80:
         return None
     return KEY_CURRENT_BASE + offset, KEY_EVENT_BASE + offset, mask
+
+
+def key_active_high(mapping: int) -> bool:
+    """Bit 15 of a mapping word: the key counts as pressed while its bit is set."""
+    return bool(mapping >> 15 & 1)
 
 
 class CabinetEventQueue(queue.Queue):

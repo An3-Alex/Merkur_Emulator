@@ -11,7 +11,7 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "scripts"))
 from runtime_bundle import (
-    OWN_BINARIES, POWERSHELL_FILES, REQUIRED_PYTHON_FILES, SHELL_FILES,
+    DATA_FILES, OWN_BINARIES, POWERSHELL_FILES, REQUIRED_PYTHON_FILES, SHELL_FILES,
     RETIRED_PYTHON_FILES, materialize_runtime, runtime_payload,
 )
 
@@ -30,7 +30,7 @@ class RuntimeBundleTests(unittest.TestCase):
             (source / "scripts" / "bridge.py").write_text("v1", encoding="utf-8")
             for name in RETIRED_PYTHON_FILES:
                 (source / "scripts" / name).write_text("retired installer", encoding="utf-8")
-            for name in SHELL_FILES:
+            for name in (*SHELL_FILES, *DATA_FILES):
                 (source / "scripts" / name).write_text(name, encoding="utf-8")
             for relative in OWN_BINARIES:
                 binary = source / relative
@@ -42,12 +42,13 @@ class RuntimeBundleTests(unittest.TestCase):
 
             paths = runtime_payload(source)
             self.assertEqual(
-                len(paths), len(POWERSHELL_FILES) + len(SHELL_FILES)
+                len(paths), len(POWERSHELL_FILES) + len(SHELL_FILES) + len(DATA_FILES)
                 + len(OWN_BINARIES) + len(REQUIRED_PYTHON_FILES) + 1,
             )
             materialize_runtime(source, target)
             self.assertEqual((target / "scripts" / "bridge.py").read_text(), "v1")
             self.assertFalse((target / "scripts" / "dump.bin").exists())
+            self.assertTrue((target / "scripts" / "firmware_addresses.json").is_file())
             for name in RETIRED_PYTHON_FILES:
                 self.assertFalse((target / "scripts" / name).exists())
             self.assertFalse(any("audio-" in str(name) for name in OWN_BINARIES))

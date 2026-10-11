@@ -21,8 +21,19 @@ BUTTONS = (
     ("Menü", "menu"), ("Autostart", "autostart"),
     ("Einsatz", "einsatz"), ("Maxeinsatz", "maxeinsatz"),
     ("Start", "start"), ("Auszahlung", "auszahlung"),
-    ("Service", "service"),
+    ("Automatik", "automatik"), ("Service", "service"),
 )
+BUTTON_COLUMNS = 5
+BUTTON_FIRST_ROW = 2
+
+
+def button_cell(index: int) -> tuple[int, int]:
+    """Grid cell of the index-th control below the screen, five to a row."""
+    row, column = divmod(index, BUTTON_COLUMNS)
+    return BUTTON_FIRST_ROW + row, column
+
+
+COIN_BUTTON_CELL = button_cell(len(BUTTONS))
 SCREEN_CAPTURE_INTERVAL_SECONDS = 2.0
 
 
@@ -166,28 +177,31 @@ class ControlPanel:
         self.canvas.bind("<ButtonRelease-1>", self._touch_release)
 
         for index, (caption, name) in enumerate(BUTTONS):
-            row, column = divmod(index, 5)
+            row, column = button_cell(index)
             button = ttk.Button(frame, text=caption, width=15)
-            button.grid(row=2 + row, column=column, padx=2, pady=3)
+            button.grid(row=row, column=column, padx=2, pady=3)
             button.bind("<ButtonPress-1>", lambda _e, key=name: self._button(key, True))
             button.bind("<ButtonRelease-1>", lambda _e, key=name: self._button(key, False))
 
+        # The coin follows the last key; nothing shares a cell with a key.
+        coin_row, coin_column = COIN_BUTTON_CELL
         ttk.Button(frame, text="+1 € (MP)", width=15,
-                   command=self._coin).grid(row=3, column=2, padx=2, pady=3)
-        ttk.Button(frame, text="Touch-Kalibrierung zurücksetzen", width=30,
-                   command=self._reset_touch_calibration).grid(row=3, column=3, columnspan=2, padx=2, pady=3)
+                   command=self._coin).grid(row=coin_row, column=coin_column, padx=2, pady=3)
 
         ttk.Checkbutton(frame, text="Tür offen", variable=self.door_open,
-                        command=self._door).grid(row=4, column=0, columnspan=2,
+                        command=self._door).grid(row=coin_row + 1, column=0, columnspan=2,
                                                   sticky="w", pady=(8, 2))
+        ttk.Button(frame, text="Touch-Kalibrierung zurücksetzen", width=30,
+                   command=self._reset_touch_calibration).grid(
+            row=coin_row + 1, column=3, columnspan=2, padx=2, pady=(8, 2))
         ttk.Checkbutton(frame, text="Mausklicks im QEMU-Fenster als Touch",
-                        variable=self.native_mouse).grid(row=4, column=2,
-                                                        columnspan=3, sticky="w")
+                        variable=self.native_mouse).grid(row=coin_row + 2, column=0,
+                                                        columnspan=5, sticky="w")
         ttk.Label(frame, text=("QEMU: Fenster M90-3dfx-0 verwenden; Vorschau wird alle 2 Sekunden aktualisiert."
                               if display_backend == "sdl" else
                               "QEMU: Reiter lower verwenden; Tasten gedrückt halten wie am Automaten.")).grid(
-            row=5, column=0, columnspan=5, sticky="w")
-        ttk.Label(frame, textvariable=self.status).grid(row=6, column=0,
+            row=coin_row + 3, column=0, columnspan=5, sticky="w")
+        ttk.Label(frame, textvariable=self.status).grid(row=coin_row + 4, column=0,
                                                         columnspan=5, sticky="w", pady=(5, 0))
         root.protocol("WM_DELETE_WINDOW", self._close)
         self.capture_thread = threading.Thread(target=self._capture_loop,

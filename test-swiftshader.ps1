@@ -20,6 +20,15 @@ $qemuImage = $Image.Replace('\', '/')
 $primaryDisplay = if ($SwapDisplays) { 'lower' } else { 'upper' }
 $secondaryDisplay = if ($SwapDisplays) { 'upper' } else { 'lower' }
 $qemuArgs = '-accel whpx -machine pc -cpu "qemu32,+sse2,model-id=Intel(R) Celeron(R) M CPU 440 @ 1.86GHz" -smp 1 -m 2048 -drive file="' + $qemuImage + '",format=raw,if=ide,index=0,media=disk -boot c -vga none -device qxl-vga,id=lower,revision=2,vgamem_mb=64,xres=640,yres=480 -device qxl,id=upper,revision=2,vgamem_mb=64,xres=640,yres=480 -display gtk,show-tabs=on -netdev user,id=n0,restrict=on -device i82559c,netdev=n0,mac=00:13:95:06:EE:6E -serial null -serial null -serial tcp:127.0.0.1:4553,server=on,wait=off -serial null -qmp tcp:127.0.0.1:4444,server=on,wait=off'
+# The geometry the card was formatted with instead of the one QEMU's BIOS
+# derives from its size: a 4-GB card can otherwise stop with
+# "A disk read error occurred".
+if ($Image -and (Test-Path -LiteralPath $Image -PathType Leaf)) {
+    $geometry = & $Python (Join-Path $PSScriptRoot 'scripts\image_partition.py') --bios-geometry $Image
+    if ($LASTEXITCODE -eq 0 -and "$geometry" -match '^(\d+) (\d+) (\d+)$') {
+        $qemuArgs += " -global ide-hd.lcyls=$($Matches[1]) -global ide-hd.lheads=$($Matches[2]) -global ide-hd.lsecs=$($Matches[3])"
+    }
+}
 if ($UsbTablet) { $qemuArgs += ' -usb -device usb-tablet' }
 $audioBackend = 'bridge'
     # COM1 is dedicated PCM transport. The database remains on COM3.

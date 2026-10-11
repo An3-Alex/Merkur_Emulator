@@ -75,3 +75,42 @@ Loader-Build verschieben, bleiben beim Vergleich außen vor. Enthält ein Loader
 die Befehlsfolge nicht, bleibt er unverändert. Das Serviceprogramm erhält immer
 die SRAM-Anbindung; seine Datenfristen werden verlängert, wo derselbe Befehl
 genau einmal vorkommt.
+
+Das Spielprogramm darf nur in `WorkDir` liegen. Die SRAM-Bibliothek findet die
+Importe des Spielprogramms über ihre Namen. QEMU erhält die Laufwerksgeometrie
+aus dem Bootsektor der Karte, damit auch Karten mit anderer Größe starten.
+
+Das Spiel vergleicht bei jedem Start die Liste, die es über seine Dateien
+berechnet (`NVRAM/CheckTemp.txt`), mit der Liste der Karte
+(`WorkDir/CheckSumAdpConfigTool.txt`). Bei einer Karte, deren Spieldaten
+nachträglich geändert wurden, bleibt es mit „SYSTEM ERROR 28“ stehen. Das
+Laufzeit-Update ersetzt dann die Liste der Arbeitskopie durch die berechnete;
+die Liste der Karte bleibt als `CheckSumAdpConfigTool.txt.pre-m90` erhalten.
+Der nächste Start läuft durch.
+
+## Andere Stände des Datenbankprogramms
+
+Die Bridge arbeitet mit den Adressen des geprüften Datenbankstands. In
+`scripts/firmware_addresses.json` stehen zu jeder dieser Adressen Prüfsummen
+kurzer Code-Fenster aus ihrer Umgebung, bei RAM-Adressen aus der Umgebung der
+Befehle, die sie verwenden. Mit ihnen sucht `firmware_relocation.py` die
+Adressen in der gewählten Datenbank. Die Bridge läuft dann mit denselben
+Quelltexten und den dort gefundenen Adressen (`DB_VERSION_ADDRESSES_ADAPTED`).
+Wird eine Adresse nicht eindeutig gefunden, startet der Emulator nicht.
+
+Kommt eine Adresskonstante in `m68k_database_bridge.py` oder
+`cabinet_controls.py` hinzu, wird die Tabelle aus der entschlüsselten Runtime
+des geprüften Stands neu erzeugt:
+`python scripts/firmware_relocation.py --build RUNTIME`.
+
+## Zulassungskarte und Tasten
+
+Die Datenbank liest von der Karte Nummer, Profil und vier Bytes ab `0x0D`. Das
+Profil muss zu dem Gerätetyp gehören, als der sich die Datenbank meldet. Eine
+Karte, die die Datenbank noch nicht kennt, beschreibt sie mit ihrer Nummer; die
+Bridge nimmt Schreibzugriffe nur im Arbeitsspeicher an, die gewählte Datei
+bleibt unverändert.
+
+Das Bedienfeld kennt neben den Tasten jedes Geräts die Taste „Automatik“
+(Spielstart-Automatik). Ihr Schalter bleibt, wie ihn das Board liefert, solange
+sie nicht benutzt wird. Bit 15 im Tastenwort der Firmware kehrt den Pegel um.

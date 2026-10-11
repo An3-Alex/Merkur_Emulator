@@ -24,6 +24,24 @@ class GraphicsUpdateTests(unittest.TestCase):
             self.assertEqual(self.run_update(sram=Path("proxy.dll")), "Service SRAM updated")
         self.assertEqual(service.call_count, 2)
 
+    def test_check_list_of_a_changed_card_is_adapted_with_the_update(self):
+        listed = b"CheckSumme Datei \\A\\*: 5\r\nGesamtCheckSumme: 5\r\n"
+        computed = b"CheckSumme Datei \\A\\*: 3\r\nGesamtCheckSumme: 3\r\n"
+        (self.guest / "WorkDir/CheckSumAdpConfigTool.txt").write_bytes(listed)
+        (self.guest / "NVRAM/CheckTemp.txt").write_bytes(computed)
+        self.assertIn("Prüfliste", " ".join(graphics.version_notes(self.guest)))
+        self.assertIn("Graphics updated", self.run_update())                 # together with the files
+        self.assertEqual((self.guest / "WorkDir/CheckSumAdpConfigTool.txt").read_bytes(), computed)
+        self.assertEqual(self.run_update(), "Graphics already current")
+        self.assertNotIn("Prüfliste", " ".join(graphics.version_notes(self.guest)))
+        # Later, with every file current: the list alone makes an update necessary.
+        (self.guest / "NVRAM/CheckTemp.txt").write_bytes(computed.replace(b"3", b"4"))
+        self.assertEqual(self.run_update(check_only=True), "Graphics update required")
+        self.assertEqual((self.guest / "WorkDir/CheckSumAdpConfigTool.txt").read_bytes(), computed)
+        self.assertEqual(self.run_update(), "Graphics updated; check list adapted")
+        self.assertEqual(self.run_update(), "Graphics already current")
+        self.assertEqual((self.guest / "WorkDir/CheckSumAdpConfigTool.txt.pre-m90").read_bytes(), listed)
+
     def test_unknown_service_blocks_graphics_before_any_write(self):
         with mock.patch("service_sram.update", side_effect=ValueError("Unrecognized service")):
             with self.assertRaisesRegex(ValueError, "Unrecognized service"):
@@ -206,10 +224,19 @@ class GraphicsUpdateTests(unittest.TestCase):
         self.assertIn("updated", self.run_update(audio=audio))
         self.assertEqual((self.guest / "WorkDir/game.exe").read_bytes(), b"another game package")
 
-    def test_missing_cabinet_files_still_stop_the_update(self):
+    def test_card_with_the_game_program_in_one_folder_is_updated(self):
+        # Other cards keep game.exe only in WorkDir; the proxies still go
+        # into both folders.
         audio = self.audio_fixture()
         (self.guest / "NVRAM/game.exe").unlink()
-        with self.assertRaisesRegex(ValueError, "Missing file"):
+        self.assertEqual(graphics.version_notes(self.guest), [])
+        self.assertIn("updated", self.run_update(audio=audio))
+
+    def test_missing_cabinet_files_still_stop_the_update(self):
+        audio = self.audio_fixture()
+        for directory in ("NVRAM", "WorkDir"):
+            (self.guest / directory / "game.exe").unlink()
+        with self.assertRaisesRegex(ValueError, "missing file"):
             self.run_update(audio=audio)
         with self.assertRaisesRegex(ValueError, "missing file"):
             graphics.version_notes(self.guest)

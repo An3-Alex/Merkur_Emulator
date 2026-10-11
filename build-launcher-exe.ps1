@@ -31,7 +31,8 @@ try {
         'prepare_image_stage.sh', 'stage_display_verify.sh', 'retry_qxl_install.sh',
         'finalize_image_stage.sh', 'check_image_stage.sh', 'update_runtime_graphics.sh',
         'image_partition.sh',
-        'stage_audio_bridge.sh', 'install_qxl_helper_shell.sh', 'stage_qemu3dfx.sh', 'stage_loader_idle.sh'
+        'stage_audio_bridge.sh', 'install_qxl_helper_shell.sh', 'stage_qemu3dfx.sh', 'stage_loader_idle.sh',
+        'firmware_addresses.json'
     )) {
         $source = Join-Path $project "scripts\$name"
         $arguments += @('--add-data', "${source}:scripts")

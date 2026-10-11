@@ -108,11 +108,38 @@ def locate_ntfs(path: Path) -> ImageVolume:
         return candidates[0]
 
 
+def bios_geometry(path: Path) -> tuple[int, int, int] | None:
+    """Cylinders, heads and sectors the cabinet's BIOS presented for this card.
+
+    The XP boot sector reads through the BIOS with the heads and sectors per
+    track the card was formatted with. QEMU's BIOS derives its own geometry
+    from the size: a 4-GB card formatted with 255 heads gets 128, and the
+    guest stops with "A disk read error occurred". None when the boot sector
+    names no usable geometry.
+    """
+    volume = locate_ntfs(path)
+    with path.open("rb") as stream:
+        stream.seek(volume.offset)
+        boot = stream.read(SECTOR)
+    sectors, heads = struct.unpack_from("<HH", boot, 24)
+    if not 1 <= heads <= 255 or not 1 <= sectors <= 63:
+        return None
+    cylinders = path.stat().st_size // SECTOR // (heads * sectors)
+    return max(1, min(cylinders, 1024)), heads, sectors
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("image", type=Path)
+    parser.add_argument("--bios-geometry", action="store_true",
+                        help="print cylinders, heads and sectors of the BIOS geometry instead of the volume bounds")
     args = parser.parse_args()
     try:
+        if args.bios_geometry:
+            geometry = bios_geometry(args.image)
+            if geometry is not None:
+                print(*geometry)
+            raise SystemExit(0)
         volume = locate_ntfs(args.image)
     except (OSError, ValueError) as exc:
         parser.exit(3, f"CF-Layout: {exc}\n")

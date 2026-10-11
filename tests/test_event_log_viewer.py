@@ -173,6 +173,12 @@ class EventLogViewerTests(unittest.TestCase):
         response = parser.feed("DB_VIRTUAL_AUX_REPLY command=35 wire=00")
         self.assertEqual(request[0].direction, "DB → Board")
         self.assertEqual(response[0].direction, "Board → DB")
+        written = parser.feed("DB_VIRTUAL_AUX_MEMORY command=39 index=0D value=2E")
+        read = parser.feed("DB_VIRTUAL_AUX_MEMORY command=36 index=20 value=FE")
+        self.assertEqual((written[0].direction, written[0].title),
+                         ("DB → Board", "Zulassungskarte beschrieben: Byte 0D = 2E"))
+        self.assertEqual((read[0].direction, read[0].title),
+                         ("Board → DB", "Zulassungskarte gelesen: Byte 20 = FE"))
 
     def test_exact_frame_replaces_bytewise_fallback(self) -> None:
         parser = viewer.BridgeLogParser()

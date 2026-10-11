@@ -17,10 +17,9 @@ Service und Spielgeldeinwurf. Ton und ein optionales Live-Protokoll sind enthalt
 3. Beim ersten Mal „Frisches Image einrichten“ verwenden. Danach „Emulator starten“.
    Eine bereits eingerichtete Arbeitskopie kann direkt gestartet werden.
 
-**Bekannter Fehler:** Der erste Start nach „Frisches Image einrichten“ kann auf
-einem schwarzen Bild mit der Zeile „CPU: …, Board: …“ stehen bleiben. Dann
-„Alles beenden“ wählen und den Emulator erneut starten; ab dem zweiten Start
-läuft er normal.
+Der erste Start nach „Frisches Image einrichten“ dauert etwa zwei Minuten
+länger: Das Spiel übernimmt dabei die Einstellungen der Datenbank und startet
+Windows einmal neu.
 
 Mit „Alles beenden“ werden die zum Emulator gehörenden Prozesse beendet.
 Dateipfade und Einstellungen bleiben für den nächsten Start gespeichert.
@@ -53,10 +52,15 @@ der geprüften Version abweicht.
 
 Unter „Emulationseinstellungen → Datenbank-Schlüssel (D3)“ steht standardmäßig
 `auto`: Ist der Schlüssel einer gewählten Datenbank unbekannt, sucht ihn der
-Starter einmalig (je nach CPU bis etwa 20 Minuten) und merkt ihn sich. Passt
-eine Datenbank nicht zu den Adressen, die die Bridge nachbildet, startet sie
-trotzdem; der Starter nennt dann die betroffenen Funktionen (z. B. Touch,
-Münzeingang).
+Starter einmalig (je nach CPU bis etwa 30 Minuten) und merkt ihn sich. Ist
+eine Datenbank ein anderer Stand desselben Datenbankprogramms (z. B. Magie 88
+CC4), findet die Bridge ihre Adressen darin selbst; der Starter meldet das.
+Findet sie sie nicht, startet der Emulator nicht.
+
+Die Zulassungskarte muss zum Gerätetyp passen, als der sich die Datenbank
+beim Start meldet (`ADP…`); sonst zeigt das Spiel „keine Zulassungskarte
+erkannt“. Die Taste „Automatik“ im Bedienfeld bucht bei Geräten ohne
+automatische Umbuchung vom Geldspeicher in den Punktespeicher.
 
 ## Protokolle
 
