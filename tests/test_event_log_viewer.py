@@ -31,6 +31,18 @@ class EventLogViewerTests(unittest.TestCase):
         self.assertEqual(menu.title, "Datenbank hat Touch bei X=203 Y=530 erhalten")
         self.assertEqual(parser.feed("DB_TOUCH_FIRMWARE")[0].title, "Datenbank hat Touch erhalten")
 
+    def test_game_pc_restart_during_the_handshake_is_shown(self) -> None:
+        parser = viewer.BridgeLogParser()
+        for line, title in (
+            ("DB_HANDSHAKE_WAITS_FOR_GUEST request=01 02 4F 00 09 00 04", "steht still"),
+            ("DB_INITVIDEO_GUEST_RESTARTED reply=06 03 00 00 02 01 85 2D request=01 02 4F 00 09 00 04",
+             "neu gestartet"),
+            ("DB_HANDSHAKE_CONTINUES after_seconds=83.4", "läuft weiter"),
+        ):
+            event = parser.feed(line)[-1]
+            self.assertIn(title, event.title)
+            self.assertEqual(event.details, line)
+
     def test_database_version_check_is_visible(self) -> None:
         line = "DB_VERSION_UNVERIFIED groups=touch,hopper names=Touch; Hopper"
         event = viewer.BridgeLogParser().feed(line)[0]

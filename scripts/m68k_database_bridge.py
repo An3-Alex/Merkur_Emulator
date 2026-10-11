@@ -1141,6 +1141,85 @@ def initvideo_retry_confirmed(
     return systeminfo_seen
 
 
+class RestartedGuestHandshake:
+    """Bring a game PC that started again back into the startup handshake.
+
+    The game answers INITVIDEO with an acknowledgment, the firmware then asks
+    for the system info (4F 00 09 00) and waits for it. A game that finds new
+    machine settings in INITVIDEO stores them and restarts Windows instead of
+    answering. Started again it acknowledges the repeated INITVIDEO and waits
+    for the request, which the firmware has already sent: both sides wait.
+
+    The reply to an INITVIDEO repeated after the firmware's request is
+    therefore kept from the firmware, which has its acknowledgment, and the
+    request is sent to the game again.
+
+    The firmware waits about 40 seconds for the system info and then starts
+    over from its boot code, which this bridge sets up only once. Windows
+    takes longer than that to restart, so the firmware stands still while its
+    request is unanswered: it runs again as soon as bytes arrive for it.
+    """
+
+    QUIET_SECONDS = 0.5
+    # The game answers within a second; a restart is assumed well before the
+    # firmware's own time limit.
+    GRACE_SECONDS = 10.0
+
+    def __init__(self) -> None:
+        self.request: bytes | None = None
+        self.request_at = 0.0
+        self.collecting = False
+        self.reply = bytearray()
+        self.reply_at = 0.0
+
+    def firmware_frame(self, frame: bytes, now: float) -> bool:
+        """Note the firmware's first frame after INITVIDEO; True when it is new."""
+        if self.request is not None or frame[:len(INITVIDEO_PREFIX)] == INITVIDEO_PREFIX:
+            return False
+        self.request = bytes(frame)
+        self.request_at = now
+        return True
+
+    def waiting(self, now: float, pending_count: int) -> bool:
+        """Whether the firmware stands still for a game PC that is restarting."""
+        return (
+            self.request is not None
+            and pending_count == 0
+            and now - self.request_at >= self.GRACE_SECONDS
+        )
+
+    def repeated(self) -> None:
+        """INITVIDEO went out again on the wire."""
+        if self.request is not None:
+            self.collecting = True
+            self.reply.clear()
+
+    def reset(self) -> None:
+        self.request = None
+        self.collecting = False
+        self.reply.clear()
+
+    def take(self, pending: deque[int], now: float) -> None:
+        """Collect the game's reply to the repeated INITVIDEO."""
+        if not self.collecting or not pending:
+            return
+        while pending:
+            self.reply.append(pending.popleft())
+        self.reply_at = now
+
+    def due(self, pending: deque[int], now: float) -> bytes | None:
+        """The request to send once the reply is complete, or None."""
+        if not self.collecting or not self.reply or now - self.reply_at < self.QUIET_SECONDS:
+            return None
+        self.collecting = False
+        if b"M90-" in self.reply:
+            # The system info itself: it belongs to the firmware.
+            pending.extendleft(reversed(self.reply))
+            self.reply.clear()
+            return None
+        return self.request
+
+
 def observe_guest_systeminfo(tail: bytearray, value: int) -> bool:
     """Detect the M90 system-info prefix across COM3 receive boundaries."""
     tail.append(value & 0xFF)
@@ -2431,6 +2510,8 @@ def run_bridge(args: argparse.Namespace) -> int:
             initial_frame_retry_at = 0.0
             guest_systeminfo_tail = bytearray()
             guest_systeminfo_seen = False
+            restarted_guest = RestartedGuestHandshake()
+            guest_restart_wait_since: float | None = None
             last_uart_activity_at = time.monotonic()
             idle_diagnostic_at = 0.0
             active_isr_diagnostic_at = 0.0
@@ -2622,6 +2703,11 @@ def run_bridge(args: argparse.Namespace) -> int:
                         f"DB_FRAME data={wire_frame.hex(' ').upper()}",
                         flush=True,
                     )
+                    if initial_retry_frame is not None and restarted_guest.firmware_frame(
+                            bytes(wire_frame), retry_now):
+                        # Give the game a full interval to answer the firmware
+                        # before INITVIDEO is repeated to it.
+                        initial_frame_retry_at = retry_now + INITIAL_FRAME_RETRY_SECONDS
                     if (
                         args.trace_diagnostics
                         and not scc_a_pointer_watch_enabled
@@ -2646,6 +2732,7 @@ def run_bridge(args: argparse.Namespace) -> int:
                         flush=True,
                     )
                     initial_retry_frame = None
+                    restarted_guest.reset()
                 elif initial_retry_frame is not None and initial_frame_retry_due(
                     response_pending=bool(pending),
                     attempts=initial_frame_attempts,
@@ -2664,6 +2751,7 @@ def run_bridge(args: argparse.Namespace) -> int:
                     initial_frame_retry_at = (
                         time.monotonic() + INITIAL_FRAME_RETRY_SECONDS
                     )
+                    restarted_guest.repeated()
                     print(
                         "DB_INITVIDEO_WIRE_RETRY "
                         f"attempt={initial_frame_attempts} "
@@ -2673,9 +2761,22 @@ def run_bridge(args: argparse.Namespace) -> int:
                     )
                     if initial_frame_attempts >= INITIAL_FRAME_MAX_ATTEMPTS:
                         initial_retry_frame = None
+                        restarted_guest.reset()
                         print(
                             "DB_INITVIDEO_RETRY_LIMIT_REACHED "
                             f"attempts={initial_frame_attempts}",
+                            flush=True,
+                        )
+                if initial_retry_frame is not None and not rx_data_watch and not rx_ready_seen:
+                    restarted_guest.take(pending, retry_now)
+                    startup_request = restarted_guest.due(pending, retry_now)
+                    if startup_request is not None:
+                        send_serial_frame(com3, startup_request)
+                        initial_frame_retry_at = retry_now + INITIAL_FRAME_RETRY_SECONDS
+                        print(
+                            "DB_INITVIDEO_GUEST_RESTARTED "
+                            f"reply={bytes(restarted_guest.reply).hex(' ').upper()} "
+                            f"request={startup_request.hex(' ').upper()}",
                             flush=True,
                         )
                 if should_publish_pending_uart_byte(
@@ -2694,6 +2795,20 @@ def run_bridge(args: argparse.Namespace) -> int:
                     rx_data_watch = True
                     rx_ready_seen = True
                     rx_wait_reported = False
+                if initial_retry_frame is not None and restarted_guest.waiting(retry_now, len(pending)):
+                    if guest_restart_wait_since is None:
+                        guest_restart_wait_since = retry_now
+                        print("DB_HANDSHAKE_WAITS_FOR_GUEST request=" + restarted_guest.request.hex(" ").upper(),
+                              flush=True)
+                    ensure_com3_receiver_alive(receiver_errors)
+                    if process.poll() is not None:
+                        raise RuntimeError("m68k QEMU exited")
+                    time.sleep(0.02)
+                    continue
+                if guest_restart_wait_since is not None:
+                    print(f"DB_HANDSHAKE_CONTINUES after_seconds={retry_now - guest_restart_wait_since:.1f}",
+                          flush=True)
+                    guest_restart_wait_since = None
                 timer_stop = False
                 foreground_run = timer_enabled and not board_interrupt_stack and uart_return_pc is None
                 if timer_enabled and board_interrupt_stack:
@@ -3720,6 +3835,7 @@ def run_bridge(args: argparse.Namespace) -> int:
                             initial_retry_stage = "later"
                             guest_systeminfo_seen = False
                             guest_systeminfo_tail.clear()
+                            restarted_guest.reset()
                             initial_frame_attempts = 1
                             initial_frame_retry_at = (
                                 time.monotonic() + INITIAL_FRAME_RETRY_SECONDS

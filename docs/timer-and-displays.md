@@ -19,6 +19,23 @@ Interrupts pro CPU-Zeitscheibe werden nachgeholt; bei Umprogrammierung wird
 der ausstehende Tick-Batch verworfen. Das ist eine Host-Bridge, kein
 zyklusgenaues DUART-/CPU32-Gerät.
 
+## Erster Start einer Arbeitskopie
+
+Mit dem ersten INITVIDEO erhält das Spiel die Automaten-Einstellungen der
+Datenbank, etwa die Bildschirmgrößen. Weichen sie von den auf der CF-Karte
+gespeicherten ab, schreibt das Spiel sie nach `NVRAM/machineSetup.txt` und
+startet Windows einmal neu, statt die Systeminfo zu senden.
+
+Die Datenbank fragt die Systeminfo nach der INITVIDEO-Bestätigung ab und
+beginnt nach etwa 40 Sekunden ohne Antwort mit ihrem Startcode von vorn; der
+Windows-Neustart dauert länger. Die Bridge hält die Datenbank deshalb an,
+sobald die Abfrage zehn Sekunden unbeantwortet ist, und wiederholt INITVIDEO
+weiter auf der Leitung. Bestätigt das neu gestartete Spiel, sendet die Bridge
+die Abfrage der Datenbank erneut; mit der Systeminfo läuft die Datenbank
+weiter. Im Ereignisprotokoll stehen dazu `DB_HANDSHAKE_WAITS_FOR_GUEST`,
+`DB_INITVIDEO_GUEST_RESTARTED` und `DB_HANDSHAKE_CONTINUES`. Der erste Start
+dauert dadurch etwa zwei Minuten länger als die folgenden.
+
 ## Zwei Anzeigen
 
 Der Spiel-PC hat zwei QXL-Anzeigen mit je 800×600. Die D3D9-Bridge des Gasts

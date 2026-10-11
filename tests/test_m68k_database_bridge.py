@@ -616,6 +616,76 @@ class DatabaseBridgeTests(unittest.TestCase):
             "startup", response_pending=False, systeminfo_seen=True,
         ))
 
+    def test_game_that_restarted_windows_gets_the_firmware_request_again(self) -> None:
+        # First start of a fresh image: the game acknowledges INITVIDEO, stores
+        # the new machine settings and restarts Windows. The firmware has
+        # asked for the system info meanwhile and waits for it.
+        from collections import deque
+        initvideo = bridge.INITVIDEO_PREFIX + bytes(35)
+        request = bytes.fromhex("01 02 4F 00 09 00 04")
+        acknowledgment = bytes.fromhex("06 03 00 00 02 01 85 2D")
+        handshake = bridge.RestartedGuestHandshake()
+        pending = deque()
+        # Before the firmware's request a reply to a repeated INITVIDEO is the
+        # firmware's own: nothing is kept from it.
+        handshake.repeated()
+        pending.extend(acknowledgment)
+        handshake.take(pending, 10.0)
+        self.assertEqual(bytes(pending), acknowledgment)
+        self.assertIsNone(handshake.due(pending, 20.0))
+        pending.clear()
+        self.assertFalse(handshake.waiting(1000.0, 0))
+        self.assertFalse(handshake.firmware_frame(initvideo, 50.0))
+        self.assertTrue(handshake.firmware_frame(request, 50.0))
+        self.assertFalse(handshake.firmware_frame(bytes.fromhex("01 02 46 00 04"), 51.0))
+        self.assertEqual(handshake.request, request)
+        # The game answers within a second; the firmware keeps running that
+        # long and stands still afterwards, until bytes arrive for it.
+        grace = bridge.RestartedGuestHandshake.GRACE_SECONDS
+        self.assertTrue(5 <= grace <= 20)
+        self.assertFalse(handshake.waiting(50.0 + grace - 0.1, 0))
+        self.assertTrue(handshake.waiting(50.0 + grace, 0))
+        self.assertFalse(handshake.waiting(50.0 + grace, 1))
+        # The game is back and acknowledges the repeated INITVIDEO in pieces.
+        handshake.repeated()
+        pending.extend(acknowledgment[:4])
+        handshake.take(pending, 100.0)
+        self.assertFalse(pending)
+        self.assertIsNone(handshake.due(pending, 100.2))
+        pending.extend(acknowledgment[4:])
+        handshake.take(pending, 100.3)
+        self.assertIsNone(handshake.due(pending, 100.6))
+        self.assertEqual(handshake.due(pending, 100.9), request)
+        self.assertEqual(bytes(handshake.reply), acknowledgment)
+        self.assertFalse(pending)
+        # Its system info then reaches the firmware untouched.
+        answer = b"\x07\x38O\x00M90-C0-T0-V10-P56"
+        pending.extend(answer)
+        handshake.take(pending, 101.0)
+        self.assertEqual(bytes(pending), answer)
+        self.assertIsNone(handshake.due(pending, 105.0))
+        self.assertFalse(handshake.waiting(105.0, len(pending)))
+        handshake.reset()
+        self.assertFalse(handshake.waiting(1000.0, 0))
+
+    def test_system_info_is_never_kept_from_the_firmware(self) -> None:
+        from collections import deque
+        handshake = bridge.RestartedGuestHandshake()
+        handshake.firmware_frame(bytes.fromhex("01 02 4F 00 09 00 04"), 0.0)
+        handshake.repeated()
+        late = bytes.fromhex("06 03 00 00 02 01 85 2D") + b"\x07\x38O\x00M90-C0"
+        pending = deque(late)
+        handshake.take(pending, 5.0)
+        self.assertIsNone(handshake.due(pending, 6.0))
+        self.assertEqual(bytes(pending), late)
+        # A fresh INITVIDEO from the firmware starts the handshake over.
+        handshake.reset()
+        self.assertIsNone(handshake.request)
+        handshake.repeated()
+        pending = deque(b"\x06")
+        handshake.take(pending, 9.0)
+        self.assertEqual(bytes(pending), b"\x06")
+
     def test_virtual_coin_validator_type_probes_return_selected_type(self) -> None:
         class FakeRsp:
             def read_memory(self, address: int, length: int) -> bytes:

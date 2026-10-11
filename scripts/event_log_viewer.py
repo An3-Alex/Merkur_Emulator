@@ -273,6 +273,12 @@ class BridgeLogParser:
             events.append(Event("DB → PC", "Zweites Original-INITVIDEO: Wiederholung vorgemerkt", line))
         elif line.startswith("DB_INITVIDEO_RETRY_DISARMED"):
             events.append(Event("Status", "INITVIDEO-Wiederholung nach PC-Daten beendet (ACK nicht sicher)", line))
+        elif line.startswith("DB_INITVIDEO_GUEST_RESTARTED"):
+            events.append(Event("DB → PC", "Spiel-PC neu gestartet: Anfrage der Datenbank erneut gesendet", line))
+        elif line.startswith("DB_HANDSHAKE_WAITS_FOR_GUEST"):
+            events.append(Event("Status", "Datenbank steht still, bis der Spiel-PC antwortet", line))
+        elif line.startswith("DB_HANDSHAKE_CONTINUES"):
+            events.append(Event("Status", "Spiel-PC antwortet wieder; Datenbank läuft weiter", line))
         elif line.startswith("DB_INITVIDEO_CLOCK_COMPLETED"):
             calendar = re.search(r"\b(?:time|year)=(\S+)", line)
             suffix = f": {calendar.group(1)}" if calendar else ""
