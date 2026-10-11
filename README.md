@@ -100,5 +100,4 @@ Spiels.
 | CF-Karte | `game.exe` | `7f1f7fcd9c0d15c345decc2f14102502905a5507eff3142e919987d8805612ee` |
 | Loader | `61640400.bin` | `b0768c65b34834c7a740615d2b0abdb470aec012fe4dc4a3c11531efa221e109` |
 | Factory | `61640403.bin` | `f4fa79dea48398c30ca717264ec82a824b6a93127cdf14c1b3f628bb53bc6d1c` |
-| Konfiguration | `M90_Las_Vegas.bin` | `dce3a865b742123c95ea4f0b14fa16f287ddf90cd86432f68b2301b70a919783` |
 | Spielepaket | `MERKUR_MAGIE_88_CC4.bin` | `acb5f53a21daee63330e98e3e57f081f4716c697de8f35709425736c5e127d50` |
