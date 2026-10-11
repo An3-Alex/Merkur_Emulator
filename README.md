@@ -75,7 +75,7 @@ technische Informationen stehen unter [docs](docs).
 
 ## Geprüfte Kombinationen
 
-Mit diesen CF-Karten und Datenbanken läuft der Emulator sicher.
+Mit diesen CF-Karten und Datenbanken läuft der Emulator.
 
 **Kombination 1:** CF-Karte mit der Startanzeige `M440_945_KOMBI_V20`,
 `SW-Date: 20121212`, `ADP - LOADER VERSION V7.0.0.5`.
@@ -87,3 +87,18 @@ Mit diesen CF-Karten und Datenbanken läuft der Emulator sicher.
 | Factory | `FactoryReset_61640403.xc` | `4f088db4af5f4a5d112a003ef312eb19b4388c25902ffa03f75742379a0cd5c4` |
 | Konfiguration | `M90_Las_Vegas.bin` | `dce3a865b742123c95ea4f0b14fa16f287ddf90cd86432f68b2301b70a919783` |
 | Spielepaket | `Magie_90_CC4.bin` | `593cf4b3a1ccc83f206e1492e44b9d303ea3c05990059b8659d8308da1dc2ee8` |
+
+**Kombination 2 (Magie 88 CC4):** CF-Karte mit der Startanzeige
+`M440_945_KOMBI_V18`, `SW-Date: 20121212`, `ADP - LOADER VERSION V7.0.0.3`.
+Die Datenbank meldet sich mit dieser Konfiguration als `ADP1444`; die
+Zulassungskarte braucht dazu das Profil 1150. Getestet sind Start,
+Spielauswahl, Münzeinwurf, Umbuchung mit „Automatik“ und das Laden eines
+Spiels.
+
+| Teil | Datei | SHA-256 |
+| --- | --- | --- |
+| CF-Karte | `game.exe` | `7f1f7fcd9c0d15c345decc2f14102502905a5507eff3142e919987d8805612ee` |
+| Loader | `61640400.bin` | `b0768c65b34834c7a740615d2b0abdb470aec012fe4dc4a3c11531efa221e109` |
+| Factory | `61640403.bin` | `f4fa79dea48398c30ca717264ec82a824b6a93127cdf14c1b3f628bb53bc6d1c` |
+| Konfiguration | `M90_Las_Vegas.bin` | `dce3a865b742123c95ea4f0b14fa16f287ddf90cd86432f68b2301b70a919783` |
+| Spielepaket | `MERKUR_MAGIE_88_CC4.bin` | `acb5f53a21daee63330e98e3e57f081f4716c697de8f35709425736c5e127d50` |
