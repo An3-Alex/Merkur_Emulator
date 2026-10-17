@@ -143,6 +143,26 @@ class ServiceSramTests(unittest.TestCase):
         self.assertIn("2 von 2 Datenfristen", sram.note(self.root))
         self.assertEqual(sram.update(self.root, self.proxy), "Service SRAM already current")
 
+    def test_another_version_gets_its_follow_up_deadline_at_the_same_wait_routine(self):
+        # M202 service 7.5.4.6: MOV EDX,30000 instead of 25000 for the follow-up request.
+        other = bytearray(self.original)
+        other[0x410:0x417] = b"version"
+        other[0x500:0x50C] = bytes.fromhex("BA 60 EA 00 00 8B C3 E8") + struct.pack("<i", 0x100)
+        other[0x520:0x52C] = bytes.fromhex("BA 30 75 00 00 8B C3 E8") + struct.pack("<i", 0xE0)
+        other[0x560:0x56C] = bytes.fromhex("BA 30 75 00 00 8B C3 E8") + struct.pack("<i", 0x10)  # other routine
+        output = sram.patch_service(bytes(other))
+        self.assertEqual(output[0x500:0x505], bytes.fromhex("BA") + (300_000).to_bytes(4, "little"))
+        self.assertEqual(output[0x520:0x525], bytes.fromhex("BA") + (150_000).to_bytes(4, "little"))
+        self.assertEqual(output[0x560:0x565], bytes.fromhex("BA 30 75 00 00"))
+        # The program patched before this deadline was known is updated in place.
+        self.service.write_bytes(bytes(other))
+        backup = self.service.with_name(self.service.name + ".pre-m90-sram")
+        backup.write_bytes(bytes(other))
+        self.service.write_bytes(sram.patch_service(bytes(other), follow_up_deadline=False))
+        self.assertIn("updated", sram.update(self.root, self.proxy))
+        self.assertEqual(self.service.read_bytes(), output)
+        self.assertIn("2 von 2 Datenfristen", sram.note(self.root))
+
     def test_verified_service_needs_no_note(self):
         sram.update(self.root, self.proxy)
         self.assertIsNone(sram.note(self.root))

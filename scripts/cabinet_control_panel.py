@@ -23,6 +23,14 @@ BUTTONS = (
     ("Start", "start"), ("Auszahlung", "auszahlung"),
     ("Automatik", "automatik"), ("Service", "service"),
 )
+BUTTON_LAYOUTS = {
+    'm88_m90': BUTTONS,
+    'm202': (("Menü", "menu"), ("Autostart", "starten"),
+             ("Level", "level"), ("MaxLevel", "maxlevel"),
+             ("Start", "start"), ("Auszahlung", "auszahlung"),
+             ("Info", "info"), ("Service", "service"),
+             ("Einsatz / Umbuchen", "einsatz")),
+}
 BUTTON_COLUMNS = 5
 BUTTON_FIRST_ROW = 2
 
@@ -139,7 +147,7 @@ def qemu_cursor_position(
 class ControlPanel:
     def __init__(self, root: tk.Tk, *, port: int, qmp_port: int,
                  qemu_pid: int, capture_path: Path, door_open: bool,
-                 display_backend: str = "gtk") -> None:
+                 display_backend: str = "gtk", key_layout: str = 'm88_m90') -> None:
         self.root = root
         self.port = port
         self.qmp_port = qmp_port
@@ -159,7 +167,8 @@ class ControlPanel:
         self.qemu_touch: tuple[int, int] | None = None
         self.previous_left_down = False
 
-        root.title("M90 Emulator – Bedienfeld")
+        self.buttons = BUTTON_LAYOUTS[key_layout]
+        root.title("M202 Emulator – Bedienfeld" if key_layout == 'm202' else "M90 Emulator – Bedienfeld")
         root.resizable(False, False)
         frame = ttk.Frame(root, padding=10)
         frame.grid(sticky="nsew")
@@ -176,7 +185,7 @@ class ControlPanel:
         self.canvas.bind("<B1-Motion>", self._touch_move)
         self.canvas.bind("<ButtonRelease-1>", self._touch_release)
 
-        for index, (caption, name) in enumerate(BUTTONS):
+        for index, (caption, name) in enumerate(self.buttons):
             row, column = button_cell(index)
             button = ttk.Button(frame, text=caption, width=15)
             button.grid(row=row, column=column, padx=2, pady=3)
@@ -184,7 +193,7 @@ class ControlPanel:
             button.bind("<ButtonRelease-1>", lambda _e, key=name: self._button(key, False))
 
         # The coin follows the last key; nothing shares a cell with a key.
-        coin_row, coin_column = COIN_BUTTON_CELL
+        coin_row, coin_column = button_cell(len(self.buttons))
         ttk.Button(frame, text="+1 € (MP)", width=15,
                    command=self._coin).grid(row=coin_row, column=coin_column, padx=2, pady=3)
 
@@ -374,11 +383,12 @@ def main() -> None:
     parser.add_argument("--capture", type=Path, required=True)
     parser.add_argument("--door-open", action="store_true")
     parser.add_argument("--display-backend", choices=("gtk", "sdl"), default="gtk")
+    parser.add_argument("--key-layout", choices=tuple(BUTTON_LAYOUTS), default='m88_m90')
     args = parser.parse_args()
     root = tk.Tk()
     ControlPanel(root, port=args.port, qmp_port=args.qmp_port,
                  qemu_pid=args.qemu_pid, capture_path=args.capture,
-                 door_open=args.door_open, display_backend=args.display_backend)
+                 door_open=args.door_open, display_backend=args.display_backend, key_layout=args.key_layout)
     root.mainloop()
 
 

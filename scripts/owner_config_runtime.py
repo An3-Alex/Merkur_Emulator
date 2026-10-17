@@ -15,6 +15,7 @@ from pathlib import Path
 
 from m68k_database_transform import transform_database
 from owner_database_runtime import EXPECTED_MODULE_FAMILY as MODULE_FAMILY, key_mismatch_message
+from database_profile import profile_for_header, DatabaseProfile
 
 
 RAM_SIZE = 2 * 1024 * 1024
@@ -28,6 +29,10 @@ CONFIG_COPY_SIZE = 0x200
 IDENTITY_COPY_START = RAM_SIZE - 0x80
 IDENTITY_COPY_SOURCE_OFFSET = 0x562
 IDENTITY_COPY_SIZE = 0x18
+# File offsets of the two source addresses in the entry's code.
+MOVEA_A3 = bytes.fromhex("26 7C")
+CONFIG_TABLE_OPERAND = 0x52A
+CONFIG_IDENTITY_OPERAND = 0x54C
 FACTORY_ENTRY = 0x1500
 FACTORY_ENTRY_CODE = bytes.fromhex(
     "20 7C 00 01 00 00 22 78 00 00 93 FC 00 00 00 10 "
@@ -36,7 +41,17 @@ FACTORY_ENTRY_CODE = bytes.fromhex(
 )
 
 
-def prepare_factory_runtime(path: Path, expected_sha256: str, d3: int) -> tuple[bytes, int]:
+def builtin_factory_runtime() -> tuple[bytes, int]:
+    """The reset routine every Factory module consists of, for a start without the file.
+
+    It takes the RAM size from address 0, so it serves the 2-MB and the 4-MB
+    board alike; the module's head is not used by it.
+    """
+    return bytes(FACTORY_ENTRY - 0x1000) + FACTORY_ENTRY_CODE, FACTORY_ENTRY
+
+
+def prepare_factory_runtime(path: Path, expected_sha256: str, d3: int,
+                            *, profile: DatabaseProfile | None = None) -> tuple[bytes, int]:
     """Validate the owner's native Factory entry, including its INIT write.
 
     Executable upload modules use zero in header field 0x10, unlike the main
@@ -49,6 +64,9 @@ def prepare_factory_runtime(path: Path, expected_sha256: str, d3: int) -> tuple[
     if digest != expected_sha256.replace(" ", "").upper():
         raise ValueError("factory SHA-256 mismatch")
     decoded = transform_database(raw, d3)
+    detected = profile_for_header(decoded)
+    if profile is not None and detected != profile:
+        raise ValueError('Factory-Modul und Datenbank gehören zu unterschiedlichen RAM-Familien')
     checksum, end, inverse, module_id = struct.unpack_from(">IIII", decoded)
     entry, entry_inverse = struct.unpack_from(">II", decoded, 0x4C)
     if checksum != (sum(decoded[4:]) & 0xFFFFFFFF):
@@ -56,7 +74,7 @@ def prepare_factory_runtime(path: Path, expected_sha256: str, d3: int) -> tuple[
     if (
         end != 0x1000 + len(decoded) - 1
         or inverse != (~end & 0xFFFFFFFF)
-        or module_id & 0xFFFFFF00 != MODULE_FAMILY
+        or module_id & 0xFFFFFF00 != detected.module_family
         or entry != FACTORY_ENTRY
         or entry_inverse != (~entry & 0xFFFFFFFF)
         or decoded[0x500:] != FACTORY_ENTRY_CODE
@@ -67,6 +85,7 @@ def prepare_factory_runtime(path: Path, expected_sha256: str, d3: int) -> tuple[
 
 def prepare_config_writes(
     path: Path, expected_sha256: str, d3: int,
+    *, profile: DatabaseProfile | None = None,
 ) -> tuple[list[tuple[int, bytes]], str]:
     raw = path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest().upper()
@@ -75,6 +94,9 @@ def prepare_config_writes(
     if len(raw) < CONFIG_COPY_SOURCE_OFFSET + CONFIG_COPY_SIZE:
         raise ValueError("config module is shorter than its RAM-copy source")
     decoded = transform_database(raw, d3)
+    detected = profile_for_header(decoded)
+    if profile is not None and detected != profile:
+        raise ValueError('Konfiguration und Datenbank gehören zu unterschiedlichen RAM-Familien')
     stored_checksum, end_address, _, module_id = struct.unpack_from(">IIII", decoded)
     entrypoint = struct.unpack_from(">I", decoded, 0x4C)[0]
     if stored_checksum != (sum(decoded[4:]) & 0xFFFFFFFF):
@@ -83,18 +105,24 @@ def prepare_config_writes(
     # the copied bytes themselves are the configuration.
     if (
         end_address != 0x1000 + len(decoded) - 1
-        or module_id & 0xFFFFFF00 != MODULE_FAMILY
+        or module_id & 0xFFFFFF00 != detected.module_family
         or entrypoint != CONFIG_ENTRY
         or decoded[0x500:0x508] != CONFIG_ENTRY_PREFIX
     ):
         raise ValueError("config module does not match verified RAM-copy code")
+    # The entry names its two sources itself (MOVEA.L #source,A3 before each
+    # copy loop); a module may keep the identity apart from the table.
+    sources = []
+    for operand, size in ((CONFIG_TABLE_OPERAND, CONFIG_COPY_SIZE), (CONFIG_IDENTITY_OPERAND, IDENTITY_COPY_SIZE)):
+        if decoded[operand - 2:operand] != MOVEA_A3:
+            raise ValueError("config module does not match verified RAM-copy code")
+        source = struct.unpack_from(">I", decoded, operand)[0] - 0x1000
+        if not 0x500 <= source <= len(decoded) - size:
+            raise ValueError("config module is shorter than its RAM-copy source")
+        sources.append(decoded[source:source + size])
     writes = [
-        (CONFIG_CLEAR_START, bytes(0x400)),
-        (CONFIG_COPY_START, decoded[
-            CONFIG_COPY_SOURCE_OFFSET:CONFIG_COPY_SOURCE_OFFSET + CONFIG_COPY_SIZE
-        ]),
-        (IDENTITY_COPY_START, decoded[
-            IDENTITY_COPY_SOURCE_OFFSET:IDENTITY_COPY_SOURCE_OFFSET + IDENTITY_COPY_SIZE
-        ]),
+        (detected.config_clear_start, bytes(0x400)),
+        (detected.config_clear_start, sources[0]),
+        (detected.ram_size - 0x80, sources[1]),
     ]
     return writes, digest

@@ -38,18 +38,29 @@ void mesa_select_output(unsigned output)
 def patch_sdl_game_mode(source):
     """Remember each output's game display mode when the GPU takes it over."""
     source = once(source, '    int glide_on_mesa, gui_saved_res, render_pause;',
-                  '    int glide_on_mesa, gui_saved_res, render_pause, game_w, game_h;')
+                  '    int glide_on_mesa, gui_saved_res, render_pause, game_w, game_h, foreign_front;')
     source = once(source, '    s->render_pause = 1;\n',
                   '    /* M90: the game\'s XP display mode while the GPU owns this output. */\n'
                   '    s->game_w = surface_width(s->scon->surface);\n'
                   '    s->game_h = surface_height(s->scon->surface);\n'
                   '    s->render_pause = 1;\n')
-    return once(source, 'void mesa_prepare_window(', '''/* M90: another program (the 1280x1024 service menu) changed the guest mode
+    return once(source, 'void mesa_prepare_window(', '''/* M90: the guest reports with each present whether another program's
+ * full-screen window is in front of the game on this output. The M202
+ * service menu keeps the game's mode and would stay hidden otherwise. */
+void mesa_set_foreign_front(int on)
+{
+    scon_cb.foreign_front = on;
+}
+
+/* M90: another program (the 1280x1024 service menu) changed the guest mode
  * of this output. Its desktop is shown until the game's mode returns. */
 int mesa_gpu_mode_current(void)
 {
     struct sdl_console_cb *s = &scon_cb;
     DisplaySurface *surface = s->scon ? s->scon->surface : NULL;
+    if (s->foreign_front) {
+        return 0;
+    }
     if (!s->game_w || !surface || surface_is_placeholder(surface)) {
         return 1;
     }
@@ -121,7 +132,16 @@ def patch_transport(source):
                   '                    if ((cntxRC[0] & 0xFFFFFFF0U) != (MESAGL_HPBDC & 0xFFFFFFF0U)) {\n'
                   '                        m90_client_created(s, cntxRC[1]);\n'
                   '                    }')
+    source = once(source, '                    uint32_t *swapRet = (uint32_t *)(s->fifo_ptr + (MGLSHM_SIZE - ALIGNED(1)));\n',
+                  '                    uint32_t *swapRet = (uint32_t *)(s->fifo_ptr + (MGLSHM_SIZE - ALIGNED(1)));\n'
+                  '                    /* M90: another program in front of the game on this output. */\n'
+                  f'                    mesa_set_foreign_front((swapRet[0] & {SWAP_FOREIGN_FRONT}) != 0);\n'
+                  f'                    swapRet[0] &= ~{SWAP_FOREIGN_FRONT};\n')
     return patch_transport_client(source)
+
+
+# Present flag beside the guest's 7-bit FPS limit in the swap word.
+SWAP_FOREIGN_FRONT = '0x40000000U'
 
 
 HOST_CLIENT_STATE = '''/* M90: buffer bindings and client arrays are GL context state. Two cabinet
@@ -422,7 +442,7 @@ static void m90_select_output(HDC dc)
 def patch_guest(source):
     marker = '/* M90: output identity comes from'
     if marker in source:
-        return patch_guest_fast_bind(patch_guest_threads(patch_guest_client(patch_guest_window(patch_guest_refs(patch_guest_timing(source))))))
+        return patch_guest_foreign_front(patch_guest_fast_bind(patch_guest_threads(patch_guest_client(patch_guest_window(patch_guest_refs(patch_guest_timing(source)))))))
     source = once(source, '  WGL_FUNCP("wglCreateContextAttribsARB");',
                   '  m90_select_output(hDC);\n  WGL_FUNCP("wglCreateContextAttribsARB");')
     source = once(source, 'static int level;',
@@ -476,7 +496,7 @@ def patch_guest(source):
         mglMakeCurrent(0, 0);
         mglDeleteContext(MESAGL_MAGIC);
     }''', '''    /* Setting a pixel format on the other monitor must not delete live contexts. */''')
-    return patch_guest_fast_bind(patch_guest_threads(patch_guest_client(patch_guest_window(patch_guest_refs(patch_guest_timing(source))))))
+    return patch_guest_foreign_front(patch_guest_fast_bind(patch_guest_threads(patch_guest_client(patch_guest_window(patch_guest_refs(patch_guest_timing(source)))))))
 
 
 def patch_guest_timing(source):
@@ -816,6 +836,52 @@ def patch_slots(source):
     if '#define MESAGL_MAGIC    0x5b5eb5ef' in source:
         return source
     return once(source, '#define MESAGL_MAGIC    0x5b5eb5e5', '#define MESAGL_MAGIC    0x5b5eb5ef')
+
+
+GUEST_FOREIGN_FRONT = '''/* M90: a full-screen window of another program in front of the game on this
+ * output (the M202 service menu keeps the game's display mode). The host then
+ * shows the guest desktop instead of GPU frames. The Z order decides, not the
+ * focus: a Delphi program keeps its invisible application window active. */
+static int m90_foreign_front(HDC dc)
+{
+    HWND own = WindowFromDC(dc), above;
+    DWORD self = GetCurrentProcessId();
+    MONITORINFO info = { .cbSize = sizeof(info) };
+    int guard;
+    if (!own) { return 0; }
+    own = GetAncestor(own, GA_ROOT);
+    if (!own || !GetMonitorInfoA(MonitorFromWindow(own, MONITOR_DEFAULTTONEAREST), &info)) { return 0; }
+    for (above = GetWindow(own, GW_HWNDPREV), guard = 0; above && guard < 256;
+            above = GetWindow(above, GW_HWNDPREV), guard++) {
+        DWORD pid = 0;
+        RECT rect;
+        char name[16];
+        if (!IsWindowVisible(above) || IsIconic(above)) { continue; }
+        GetWindowThreadProcessId(above, &pid);
+        if (!pid || pid == self) { continue; }
+        /* The shell's own desktop window is not a program in front. */
+        if (GetClassNameA(above, name, sizeof(name)) &&
+                (!lstrcmpiA(name, "Progman") || !lstrcmpiA(name, "WorkerW"))) { continue; }
+        if (GetWindowRect(above, &rect) &&
+                rect.left <= info.rcMonitor.left && rect.top <= info.rcMonitor.top &&
+                rect.right >= info.rcMonitor.right && rect.bottom >= info.rcMonitor.bottom) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+'''
+
+
+def patch_guest_foreign_front(source):
+    marker = ' * shows the guest desktop instead of GPU frames. The Z order decides, not the'
+    if marker in source:
+        return source
+    source = once(source, 'int WINAPI wglSwapBuffers (HDC hdc)\n{',
+                  GUEST_FOREIGN_FRONT + 'int WINAPI wglSwapBuffers (HDC hdc)\n{')
+    return once(source, '    swapRet[0] = swapFps;\n',
+                f'    swapRet[0] = swapFps | (m90_foreign_front(hdc)? {SWAP_FOREIGN_FRONT}:0);\n')
 
 
 def patch_guest_window(source):

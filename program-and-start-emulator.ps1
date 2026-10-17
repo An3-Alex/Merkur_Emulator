@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Qemu = 'C:\Program Files\qemu\qemu-system-x86_64.exe',
     [string]$QemuM68k = 'C:\Program Files\qemu\qemu-system-m68k.exe',
     [string]$Python = 'python',
@@ -13,7 +13,7 @@ param(
     [string]$FactoryReset,
     [string]$Config,
     [datetime]$DatabaseDate = [datetime]'2012-02-01T22:14:00',
-    [Nullable[uint32]]$D3 = [uint32]::Parse('D27B7159', [Globalization.NumberStyles]::HexNumber),
+    [Nullable[uint32]]$D3 = $null,
     [string]$RuntimeDump,
     [string]$AdmissionEeprom,
     [switch]$SafeTb = $true,
@@ -58,6 +58,21 @@ $runtimeOptions = @{
     UsbTablet = $UsbTablet; DoorOpen = $DoorOpen
     TraceDiagnostics = $TraceDiagnostics; NoControlWindow = $NoControlWindow
 }
+# Detect the database board before any VM or auxiliary process starts.
+$databaseBoard = $null
+if (-not [string]::IsNullOrWhiteSpace($Database) -and (Test-Path -LiteralPath $Database -PathType Leaf)) {
+    $profileArgs = @((Join-Path $PSScriptRoot 'scripts\database_profile.py'), $Database)
+    if (-not [string]::IsNullOrWhiteSpace($Loader)) { $profileArgs += @('--loader', $Loader) }
+    if (-not [string]::IsNullOrWhiteSpace($RuntimeDump)) { $profileArgs += @('--runtime-dump', $RuntimeDump) }
+    elseif ($null -ne $D3) { $profileArgs += @('--d3', ('0x{0:X8}' -f $D3)) }
+    $profileJson = & $Python @profileArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Datenbank-/Loader-Prüfung fehlgeschlagen; kein Emulator gestartet.' }
+    $databaseBoard = $profileJson | ConvertFrom-Json
+    if ($null -eq $D3 -and [string]::IsNullOrWhiteSpace($RuntimeDump)) { $D3 = [uint32]$databaseBoard.d3 }
+} elseif ($DryRun -and -not $PSBoundParameters.ContainsKey('D3') -and [string]::IsNullOrWhiteSpace($RuntimeDump)) {
+    # A preview without files retains the legacy placeholder; its board is unknown.
+    $D3 = [uint32]::Parse('D27B7159', [Globalization.NumberStyles]::HexNumber)
+}
 if (($null -eq $D3) -eq [string]::IsNullOrWhiteSpace($RuntimeDump)) {
     throw 'Specify exactly one of -D3 or -RuntimeDump. This is the original database boot-ROM context.'
 }
@@ -80,12 +95,13 @@ $programArgs = @(
     $programmer,
     '--loader', $Loader,
     '--expected-loader-sha256', (Get-SelectedInputHash $Loader),
-    '--factory', $FactoryReset,
-    '--expected-factory-sha256', (Get-SelectedInputHash $FactoryReset),
     '--database', $Database,
     '--expected-database-sha256', (Get-SelectedInputHash $Database),
     '--date', $DatabaseDate.ToString('yyyy-MM-ddTHH:mm:ss')
 )
+if (-not [string]::IsNullOrWhiteSpace($FactoryReset)) {
+    $programArgs += @('--factory', $FactoryReset, '--expected-factory-sha256', (Get-SelectedInputHash $FactoryReset))
+}
 if ($null -ne $D3) { $programArgs += @('--d3', ('0x{0:X8}' -f $D3)) }
 else { $programArgs += @('--runtime-dump', $RuntimeDump) }
 if (-not [string]::IsNullOrWhiteSpace($Config)) {
@@ -101,6 +117,7 @@ if ($DryRun) {
     }
     [ordered]@{
         virtual_programming = [ordered]@{
+            board = $databaseBoard
             executable = $Python
             arguments = $programArgs
             date = $DatabaseDate.ToString('yyyy-MM-ddTHH:mm:ss')
@@ -116,15 +133,14 @@ if (Get-Process qemu-system* -ErrorAction SilentlyContinue) {
 foreach ($item in @(
     @{ Name = 'Image'; Value = $Image },
     @{ Name = 'Database'; Value = $Database },
-    @{ Name = 'Loader'; Value = $Loader },
-    @{ Name = 'FactoryReset'; Value = $FactoryReset }
+    @{ Name = 'Loader'; Value = $Loader }
 )) {
     if ([string]::IsNullOrWhiteSpace($item.Value)) {
         throw "Datei auswählen: $($item.Name)"
     }
 }
 
-Write-Output 'PROGRAMMING_VIRTUAL_DATABASE: Loader -> FactoryReset -> Date -> Config -> Database'
+Write-Output 'PROGRAMMING_VIRTUAL_DATABASE: Loader -> optional FactoryReset -> Date -> optional Config -> Database'
 & $Python @programArgs
 if ($LASTEXITCODE -ne 0) {
     throw "Virtual database programming failed with exit code $LASTEXITCODE"

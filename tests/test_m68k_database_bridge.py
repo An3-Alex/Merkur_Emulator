@@ -1293,8 +1293,10 @@ class DatabaseBridgeTests(unittest.TestCase):
                 self.writes = []
 
             def read_memory(self, address: int, width: int) -> bytes:
-                if (address, width) == (bridge.HOPPER_MODULATION_COUNTER, 3):
-                    return bytes([self.counter, 0, self.phase])
+                if (address, width) == (bridge.HOPPER_MODULATION_COUNTER, 1):
+                    return bytes([self.counter])
+                if (address, width) == (bridge.HOPPER_MODULATION_PHASE, 1):
+                    return bytes([self.phase])
                 if (address, width) == (bridge.HOPPER_SENSOR_SHADOW, 2):
                     return bytes.fromhex("08 A4")
                 raise AssertionError("unexpected firmware read")
@@ -1532,6 +1534,21 @@ class DatabaseBridgeTests(unittest.TestCase):
                 self.assertIsNone(corrected)
                 delivered.extend(chunk)
         self.assertEqual(bytes(delivered), b"".join(frames))
+
+    def test_m202_touch_frames_are_buffered_whole_without_changing_legacy_protocol(self):
+        frames = [bytes.fromhex(s) for s in (
+            '01 02 33 00 5E 4C FB 02 12 01 04',
+            '01 02 33 00 5E 4C FB 02 12 01 04',
+            '01 02 33 00 5E 4C FF FF FF FF 04')]
+        m202 = bridge.TouchClickForwarder(prefix=b'\x01\x02\x33\x00')
+        for frame in frames:
+            chunks = [m202.feed(bytes([b]), (763,325))[0] for b in frame]
+            self.assertFalse(any(chunks[:-1]))
+            self.assertEqual(chunks[-1], frame)
+        legacy = bridge.TouchClickForwarder()
+        chunks = [legacy.feed(bytes([b]), (763,325))[0] for b in frames[0]]
+        self.assertEqual(b''.join(chunks), frames[0])
+        self.assertTrue(any(chunks[:-1]))
 
     def test_quick_touch_has_one_down_and_immediate_up(self) -> None:
         stream = bridge.TouchPacketStream()
@@ -1804,6 +1821,39 @@ class DatabaseVersionTests(unittest.TestCase):
         forwarder = bridge.InitvideoClockForwarder(lambda: bridge.RTC_DEFAULT_TIME, strict=False)
         sent = b"".join(forwarder.feed(bytes([value]))[0] for value in frame)
         self.assertEqual(sent[4:24], bytes(range(20)))
+
+    def test_longer_initvideo_of_the_4mb_board_gets_the_clock_only(self):
+        cabinet = bytes.fromhex("13 11 00 00 00 00 00 02 78")
+        frame = bridge.INITVIDEO_PREFIX + bytes(range(20)) + bytes(6) + cabinet + b"\x04"
+        self.assertEqual(len(frame), 40)
+        self.assertFalse(bridge.initvideo_frame_complete(frame[:39], 40))
+        self.assertTrue(bridge.initvideo_frame_complete(frame, 40))
+        completed = bridge.complete_initvideo_board_profile(frame, bridge.RTC_DEFAULT_TIME, strict=False)
+        self.assertEqual(bridge.initvideo_time_text(completed), "2012-02-01T22:14")
+        self.assertEqual(completed[:24] + completed[30:], frame[:24] + frame[30:])   # its own cabinet bytes
+        forwarder = bridge.InitvideoClockForwarder(lambda: bridge.RTC_DEFAULT_TIME, strict=False, length=40)
+        parts = [forwarder.feed(bytes([value]))[0] for value in frame]
+        self.assertEqual(parts[:-1], [b""] * 39)
+        self.assertEqual(parts[-1], completed)
+        with self.assertRaisesRegex(ValueError, "unexpected INITVIDEO frame layout"):
+            bridge.complete_initvideo_clock(frame + b"\x04", bridge.RTC_DEFAULT_TIME, strict=False)
+
+    def test_key_table_ends_where_the_next_table_begins(self):
+        class Rsp:
+            def read_memory(self, address, length):
+                if address == bridge.MP_STATE_ADDRESS:
+                    return bytes([14])
+                return b"\xff\xff" + bytes(length - 2)
+
+        with self.assertRaisesRegex(RuntimeError, "unknown cabinet key profile 14"):
+            bridge.publish_cabinet_buttons(Rsp(), set(), set())
+
+    def test_start_without_factory_file_runs_the_same_reset_routine(self):
+        from owner_config_runtime import FACTORY_ENTRY, FACTORY_ENTRY_CODE, builtin_factory_runtime
+        runtime, entry = builtin_factory_runtime()
+        self.assertEqual(entry, FACTORY_ENTRY)
+        self.assertEqual(runtime[entry - 0x1000:], FACTORY_ENTRY_CODE)   # loaded at 0x1000 like a module
+        self.assertFalse(any(runtime[:entry - 0x1000]))
 
 
 if __name__ == "__main__":

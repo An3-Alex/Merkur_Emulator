@@ -13,6 +13,7 @@ cannot be located unambiguously stops the start; nothing is guessed.
 from __future__ import annotations
 
 import argparse
+import ast
 from collections import Counter
 import hashlib
 import json
@@ -22,9 +23,14 @@ import struct
 import sys
 import types
 import zlib
+from database_profile import profile_for_header
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TABLE = SCRIPT_DIR / "firmware_addresses.json"
+# Builds whose addresses were checked instruction by instruction, keyed by the
+# SHA-256 of the decrypted runtime.  They hold the places the search cannot
+# find, e.g. a variable another build keeps inside a structure.
+BUILDS = SCRIPT_DIR / "firmware_builds.json"
 SOURCES = ("m68k_database_bridge.py", "cabinet_controls.py")
 LITERAL = re.compile(r"0x([0-9A-Fa-f]{4,8})\b")
 LOAD_ADDRESS = 0x1000
@@ -59,14 +65,44 @@ def source_addresses(directory: Path = SCRIPT_DIR, code_end: int | None = None) 
     """Every literal of the bridge sources that names a place in the database build."""
     found = set()
     for name in SOURCES:
-        for match in LITERAL.finditer((directory / name).read_text(encoding="utf-8")):
-            value = int(match.group(1), 16)
+        text = (directory / name).read_text(encoding="utf-8")
+        lines = [line.encode('utf-8') for line in text.splitlines()]
+        for node in ast.walk(ast.parse(text)):
+            if not isinstance(node, ast.Constant) or type(node.value) is not int:
+                continue
+            if lines[node.lineno - 1][node.col_offset:node.col_offset+2].lower() != b'0x':
+                continue
+            value = node.value
             if value in NOT_ADDRESSES:
                 continue
             if is_ram(value) or (LOAD_ADDRESS + 0x100 <= value < RAM_LOW
                                  and (code_end is None or value < code_end)):
                 found.add(value)
     return found
+
+
+def ram_size_of(runtime: bytes) -> int:
+    try:
+        return profile_for_header(runtime).ram_size
+    except ValueError:
+        return RAM_HIGH  # synthetic matcher fixtures have no database header
+
+
+def normalized(runtime: bytes, ram_size: int) -> bytes:
+    """The build with every absolute address operand set to zero.
+
+    Another build keeps its code and variables elsewhere - on a larger board
+    the variables lie megabytes away - so each instruction naming one differs
+    in exactly these four bytes.  Without them the code around reads the same.
+    """
+    top = (ram_size >> 16) - 1
+    operand = re.compile(rb"(?=\x00(?:[\x01-" + bytes([top]) + rb"][\x00-\xff]|\x00[\x10-\xff])[\x00-\xff])")
+    masked = bytearray(runtime)
+    for match in operand.finditer(runtime):
+        start = match.start()
+        if start % 2 == 0:
+            masked[start:start + 4] = b"\x00\x00\x00\x00"
+    return bytes(masked)
 
 
 def _windows(runtime: bytes, offset: int) -> str:
@@ -83,11 +119,9 @@ def _windows(runtime: bytes, offset: int) -> str:
 def build_table(runtime: bytes, directory: Path = SCRIPT_DIR) -> dict:
     """The table for the verified build.  Needs the firmware; its output does not contain it."""
     code_end = LOAD_ADDRESS + len(runtime)
+    plain = normalized(runtime, ram_size_of(runtime))
     entries = {}
     for address in sorted(source_addresses(directory, code_end)):
-        if not is_ram(address):
-            entries[f"{address:08X}"] = {"at": _windows(runtime, address - LOAD_ADDRESS)}
-            continue
         needle, sites, start = struct.pack(">I", address), [], 0
         while True:
             hit = runtime.find(needle, start)
@@ -98,16 +132,49 @@ def build_table(runtime: bytes, directory: Path = SCRIPT_DIR) -> dict:
                 sites.append(hit)
         # Sites spread over the whole build: a change in one routine leaves the others.
         chosen = sites[::max(1, len(sites) // MAX_SITES)][:MAX_SITES]
-        entries[f"{address:08X}"] = {"used": [[site, _windows(runtime, site)] for site in chosen]}
+        entry = {"used": [[site, _windows(plain, site)] for site in chosen]}
+        if not is_ram(address):
+            # A table's own bytes change with its content; the instructions
+            # naming it do not.  The surroundings count where none does.
+            entry["at"] = _windows(plain, address - LOAD_ADDRESS)
+        entries[f"{address:08X}"] = entry
     return {"runtime_sha256": hashlib.sha256(runtime).hexdigest().upper(),
-            "code_end": f"{code_end:08X}", "window": WINDOW, "reach": REACH, "step": STEP, "addresses": entries}
+            "code_end": f"{code_end:08X}", "window": WINDOW, "reach": REACH, "step": STEP,
+            "operands": "zeroed", "addresses": entries}
 
 
 def load_table(path: Path = TABLE) -> dict:
-    table = json.loads(path.read_text(encoding="utf-8"))
-    if (table["window"], table["reach"], table["step"]) != (WINDOW, REACH, STEP):
+    table = json.loads(path.read_text(encoding="utf-8-sig"))
+    if ((table["window"], table["reach"], table["step"]) != (WINDOW, REACH, STEP)
+            or table.get("operands") != "zeroed"):
         raise ValueError("firmware address table was built with other window settings")
     return table
+
+
+def _alike(windows: str, positions: dict[str, list[int]]) -> list[int]:
+    """Offsets of all places that match a place equally well.
+
+    Copies of the same routine match it alike; an operand they all name is
+    still certain.
+    """
+    votes: Counter[int] = Counter()
+    own: set[int] = set()
+    for index in range(0, len(windows), 8):
+        shift = -REACH + index // 8 * STEP
+        found = positions.get(windows[index:index + 8], ())
+        for position in found:
+            votes[position - shift] += 1.0 / len(found)
+        if shift == 0:
+            own = set(found)
+    if not votes:
+        return []
+    best = max(votes.values())
+    if best < MIN_WEIGHT:
+        return []
+    alike = [offset for offset, weight in votes.items() if best - weight < 1.0]
+    # Bytes added in front of a place pull part of its windows a little
+    # aside; the place itself is where its own window is.
+    return [offset for offset in alike if offset in own] if own & set(alike) else alike
 
 
 def _place(windows: str, positions: dict[str, list[int]]) -> int | None:
@@ -121,6 +188,13 @@ def _place(windows: str, positions: dict[str, list[int]]) -> int | None:
             # A window that occurs in many places says little about any of them.
             votes[position - shift] += 1.0 / len(found)
         named[shift] = {position - shift for position in found}
+    own = REACH // STEP * 8
+    if windows[own - 8:own + 8] != NO_WINDOW * 2:
+        # Code added in front of a place moves it against the code before;
+        # it can only be where its own bytes or the bytes just before it are.
+        here = named[0] | named[-STEP]
+        for offset in [offset for offset in votes if offset not in here]:
+            del votes[offset]
     ranked = votes.most_common(2)
     if not ranked or ranked[0][1] < MIN_WEIGHT:
         return None
@@ -141,41 +215,56 @@ def _place(windows: str, positions: dict[str, list[int]]) -> int | None:
     return first if first_weight - second_weight >= 1.0 else None
 
 
-def resolve(table: dict, runtime: bytes) -> dict[int, int]:
+def load_builds(path: Path = BUILDS) -> dict:
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def resolve(table: dict, runtime: bytes, builds: dict | None = None) -> dict[int, int]:
     """Verified address -> address in the selected build, for every address of the table."""
+    checked = (load_builds() if builds is None else builds).get(
+        hashlib.sha256(runtime).hexdigest().upper(), {}).get("addresses", {})
+    target_ram_size = ram_size_of(runtime)
+    target_ram_low = target_ram_size * 15 // 16
+    plain = normalized(runtime, target_ram_size)
     wanted = set()
     for entry in table["addresses"].values():
-        for windows in [entry["at"]] if "at" in entry else [site[1] for site in entry["used"]]:
+        for windows in [entry.get("at", "")] + [site[1] for site in entry["used"]]:
             wanted.update(windows[index:index + 8] for index in range(0, len(windows), 8))
     wanted.discard(NO_WINDOW)
     sought = {int(key, 16) for key in wanted}
     positions: dict[str, list[int]] = {}
     crc32 = zlib.crc32
-    for position in range(len(runtime) - WINDOW + 1):   # tables may begin at odd addresses
-        key = crc32(runtime[position:position + WINDOW])
+    for position in range(len(plain) - WINDOW + 1):   # tables may begin at odd addresses
+        key = crc32(plain[position:position + WINDOW])
         if key in sought:
             positions.setdefault(f"{key:08x}", []).append(position)
     moved: dict[int, int] = {}
     open_ram = []
+    code_end = LOAD_ADDRESS + len(runtime)
     for text, entry in table["addresses"].items():
         address = int(text, 16)
-        if "at" in entry:
-            offset = _place(entry["at"], positions)
-            if offset is not None:
-                moved[address] = LOAD_ADDRESS + offset
-            continue
+        low, high = (target_ram_low, target_ram_size) if is_ram(address) else (LOAD_ADDRESS, code_end)
         votes: Counter[int] = Counter()
         for _site, windows in entry["used"]:
             offset = _place(windows, positions)
-            if offset is not None and offset + 4 <= len(runtime):
-                value = struct.unpack_from(">I", runtime, offset)[0]
-                if is_ram(value):
-                    votes[value] += 1
+            places = [offset] if offset is not None else _alike(windows, positions)
+            values = {struct.unpack_from(">I", runtime, place)[0]
+                      for place in places if 0 <= place <= len(runtime) - 4}
+            if len(values) == 1 and low <= (value := values.pop()) < high:
+                votes[value] += 1
         ranked = votes.most_common(2)
         if ranked and (len(ranked) == 1 or ranked[0][1] > ranked[1][1]):
             moved[address] = ranked[0][0]
+        elif "at" in entry:
+            offset = _place(entry["at"], positions)
+            if offset is not None:
+                moved[address] = LOAD_ADDRESS + offset
         else:
             open_ram.append(address)
+    for text, target in checked.items():
+        if text in table["addresses"]:
+            moved[int(text, 16)] = int(target, 16)
+    open_ram = [address for address in open_ram if address not in moved]
     # A RAM address no instruction names directly lies in a block that moved
     # as a whole: both located neighbours must have moved by the same amount.
     located = sorted(address for address in moved if is_ram(address))
@@ -190,6 +279,14 @@ def resolve(table: dict, runtime: bytes) -> dict[int, int]:
             "Diese Datenbank ist kein Stand des bekannten Datenbankprogramms: "
             f"{len(missing)} von {len(table['addresses'])} Adressen wurden nicht gefunden "
             f"(erste: {missing[0]:08X}).")
+    places = Counter(moved.values())
+    twice = sorted(address for address, target in moved.items() if places[target] > 1)
+    if twice:
+        # Two places of the known build never become one: one of them was
+        # found at a neighbour's instruction.
+        raise UnresolvedAddresses(
+            "Diese Datenbank ist kein Stand des bekannten Datenbankprogramms: "
+            f"{len(twice)} Adressen wurden an dieselbe Stelle gelegt (erste: {twice[0]:08X}).")
     return moved
 
 

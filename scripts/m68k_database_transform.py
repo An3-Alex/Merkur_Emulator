@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce the owner loader's 0x053C/0x05EC stream transform read-only."""
+"""Reproduce the owner 2 MB / 4 MB loader stream transforms read-only."""
 
 from __future__ import annotations
 
@@ -9,29 +9,42 @@ import json
 import struct
 from pathlib import Path
 
+from database_profile import profile_for_header
+
 
 MAX_DATABASE_SIZE = 64 * 1024 * 1024
 RAW_PREFIX_SIZE = 0x100
 SEED_XOR = 0x2378BF41
+M202_SEED_TABLE = bytes.fromhex('fc42e979fb9f53eabc8593ba621f854d')
 
 
 def initialize_state(raw_prefix: bytes, d3: int) -> tuple[list[int], int, int]:
     if len(raw_prefix) != RAW_PREFIX_SIZE:
         raise ValueError("loader transform requires exactly 0x100 raw prefix bytes")
+    profile = profile_for_header(raw_prefix)
     seed = ((d3 & 0xFFFFFFFF) ^ SEED_XOR).to_bytes(4, "big")
     state = list(range(256))
-    key = [
-        raw_prefix[index]
-        ^ seed[index & 3]
-        ^ index
-        ^ ((index * 4) & 0xFF)
-        for index in range(256)
-    ]
+    if profile.ram_mib == 4:
+        table = bytearray(M202_SEED_TABLE)
+        for n, value in enumerate((d3 & 0xFFFFFFFF).to_bytes(4, 'big')):
+            table[n] ^= value
+        key = [raw_prefix[n] ^ ((table[n & 15] - (n & 15)) & 255)
+               ^ n ^ ((n * 2) & 255) for n in range(256)]
+    else:
+        key = [
+            raw_prefix[index] ^ seed[index & 3] ^ index ^ ((index * 4) & 0xFF)
+            for index in range(256)
+        ]
     j = 0
     for index in range(256):
         j = (j + state[index] + key[index]) & 0xFF
         state[index], state[j] = state[j], state[index]
-    return state, 0, 0
+    i = j = 0
+    for _ in range(77 if profile.ram_mib == 4 else 0):
+        i = (i + 1) & 0xFF
+        j = (j + state[i]) & 0xFF
+        state[i], state[j] = state[j], state[i]
+    return state, i, j
 
 
 def transform_payload(payload: bytes, state: list[int], i: int = 0, j: int = 0) -> bytes:
@@ -60,6 +73,7 @@ def inspect_transform(path: Path, expected_sha256: str, d3: int) -> dict:
     if digest != expected:
         raise ValueError(f"database SHA-256 mismatch: expected {expected}, got {digest}")
     transformed = transform_database(data, d3)
+    profile = profile_for_header(data)
     stored_checksum = struct.unpack_from(">I", transformed, 0)[0]
     calculated_checksum = sum(transformed[4:]) & 0xFFFFFFFF
     entrypoint = struct.unpack_from(">I", transformed, 0x4C)[0]
@@ -73,7 +87,9 @@ def inspect_transform(path: Path, expected_sha256: str, d3: int) -> dict:
         "source": str(path.resolve()),
         "source_sha256": digest,
         "d3": f"{d3 & 0xFFFFFFFF:08X}",
-        "seed_after_xor": f"{((d3 & 0xFFFFFFFF) ^ SEED_XOR):08X}",
+        "ram_mib": profile.ram_mib,
+        "seed_after_xor": f"{((d3 & 0xFFFFFFFF) ^ SEED_XOR):08X}" if profile.ram_mib == 2 else None,
+        "discard_bytes": 77 if profile.ram_mib == 4 else 0,
         "raw_prefix_bytes": RAW_PREFIX_SIZE,
         "transformed_payload_bytes": len(data) - RAW_PREFIX_SIZE,
         "stored_checksum": f"{stored_checksum:08X}",

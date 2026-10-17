@@ -1,4 +1,5 @@
 """The bridge's addresses are found in another build of the database program."""
+import hashlib
 from pathlib import Path
 import random
 import struct
@@ -86,6 +87,87 @@ class RelocationTests(unittest.TestCase):
         self.assertIn(f"0x{RAM_BETWEEN - 0x40:08X}", text)
         self.assertIn("NOT_AN_ADDRESS = 0x2000 + 0xFFFF  # and 0x58A9", text)
         self.assertEqual(relocation.relocated_source(SOURCE, {}), SOURCE)
+
+
+class OtherBoardTests(unittest.TestCase):
+    """A build for the 4-MB board: variables megabytes away, tables rewritten, code inserted."""
+    RAM, PLACE, TABLE, COIN = 0x001E2000, 0x2000, 0x3800, 0x4800
+    MOVE = 0x1E0000
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        source = (f"PLACE = 0x{BASE + self.PLACE:08X}\nTABLE = 0x{BASE + self.TABLE:08X}\n"
+                  f"COIN = 0x{BASE + self.COIN:08X}\nRAM = 0x{self.RAM:08X}\n")
+        for name in relocation.SOURCES:
+            (self.directory / name).write_text(source if name == relocation.SOURCES[0] else "", encoding="utf-8")
+        runtime = bytearray(random.Random(11).randbytes(0x6000))
+        struct.pack_into(">I", runtime, 0x0C, 0x61640403)
+        # Every window around PLACE holds a variable operand.
+        self.operands = range(self.PLACE - 0x100 + 2, self.PLACE + 0x100, 8)
+        for site in self.operands:
+            struct.pack_into(">I", runtime, site, self.RAM)
+        for site in (0x0A00, 0x1500, 0x5200):    # movea.l #TABLE,a0
+            runtime[site:site + 6] = b"\x20\x7c" + struct.pack(">I", BASE + self.TABLE)
+        self.runtime = bytes(runtime)
+        self.table = relocation.build_table(self.runtime, self.directory)
+
+    def other(self) -> bytes:
+        changed = bytearray(self.runtime)
+        struct.pack_into(">I", changed, 0x0C, 0x61640604)
+        for site in self.operands:
+            struct.pack_into(">I", changed, site, self.RAM + self.MOVE)
+        # The table has other content and lies 0x20 further; its users name the new place.
+        changed[self.TABLE - 0x40:self.TABLE + 0x40] = random.Random(12).randbytes(0x80)
+        for site in (0x0A00, 0x1500, 0x5200):
+            struct.pack_into(">I", changed, site + 2, BASE + self.TABLE + 0x20)
+        # A check added just in front of COIN, the code behind it rewritten:
+        # most windows around COIN still show its old place.
+        changed[self.COIN + 0x18:self.COIN + 0x200] = random.Random(13).randbytes(0x1E8)
+        return bytes(changed[:self.COIN - 0x10] + b"\x4a\x39" * 0x2C + changed[self.COIN - 0x10:])
+
+    def test_variables_and_code_are_found_on_the_larger_board(self):
+        moved = relocation.resolve(self.table, self.other(), builds={})
+        self.assertEqual(moved[self.RAM], self.RAM + self.MOVE)
+        self.assertEqual(moved[BASE + self.PLACE], BASE + self.PLACE)
+
+    def test_a_table_is_found_through_the_instructions_naming_it(self):
+        moved = relocation.resolve(self.table, self.other(), builds={})
+        self.assertEqual(moved[BASE + self.TABLE], BASE + self.TABLE + 0x20)
+
+    def test_code_added_in_front_of_a_place_does_not_pull_it_aside(self):
+        moved = relocation.resolve(self.table, self.other(), builds={})
+        self.assertEqual(moved[BASE + self.COIN], BASE + self.COIN + 0x58)
+
+
+class CheckedBuildTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        directory = Path(self.temporary.name)
+        for name in relocation.SOURCES:
+            (directory / name).write_text(SOURCE if name == relocation.SOURCES[0] else "", encoding="utf-8")
+        self.runtime = verified_build()
+        self.table = relocation.build_table(bytes(self.runtime), directory)
+        damaged = bytearray(self.runtime)
+        damaged[MIDDLE - 200:MIDDLE + 200] = bytes(400)
+        self.damaged = bytes(damaged)
+        self.key = hashlib.sha256(self.damaged).hexdigest().upper()
+
+    def test_checked_build_supplies_what_the_search_cannot_find(self):
+        builds = {self.key: {"name": "test", "addresses": {f"{BASE + MIDDLE:08X}": f"{BASE + MIDDLE + 4:08X}"}}}
+        moved = relocation.resolve(self.table, self.damaged, builds=builds)
+        self.assertEqual(moved[BASE + MIDDLE], BASE + MIDDLE + 4)
+        self.assertEqual(moved[BASE + LATE], BASE + LATE)
+        # Only for exactly that build.
+        with self.assertRaises(relocation.UnresolvedAddresses):
+            relocation.resolve(self.table, self.damaged + b"\0", builds=builds)
+
+    def test_two_addresses_on_one_place_stop_the_start(self):
+        builds = {self.key: {"name": "test", "addresses": {f"{BASE + MIDDLE:08X}": f"{BASE + LATE:08X}"}}}
+        with self.assertRaisesRegex(relocation.UnresolvedAddresses, "dieselbe Stelle"):
+            relocation.resolve(self.table, self.damaged, builds=builds)
 
 
 class BridgeTableTests(unittest.TestCase):

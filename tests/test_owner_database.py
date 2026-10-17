@@ -3,6 +3,8 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 
 MODULE_PATH = Path(__file__).parents[1] / "scripts" / "inspect_owner_database.py"

@@ -1,6 +1,9 @@
 import importlib.util
 import unittest
+import struct
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 
 MODULE_PATH = Path(__file__).parents[1] / "scripts" / "m68k_database_transform.py"
@@ -12,7 +15,9 @@ SPEC.loader.exec_module(TRANSFORM)
 
 class DatabaseTransformTests(unittest.TestCase):
     def test_stream_transform_is_symmetric_with_fresh_state(self):
-        prefix = bytes(range(256))
+        prefix = bytearray(range(256))
+        struct.pack_into(">I", prefix, 0x0C, 0x61640403)
+        prefix = bytes(prefix)
         payload = b"database transport payload"
         state, i, j = TRANSFORM.initialize_state(prefix, 0x12345678)
         encrypted = TRANSFORM.transform_payload(payload, state, i, j)
@@ -22,7 +27,9 @@ class DatabaseTransformTests(unittest.TestCase):
         )
 
     def test_raw_prefix_is_not_transformed(self):
-        data = bytes(range(256)) + b"opaque"
+        prefix = bytearray(range(256))
+        struct.pack_into(">I", prefix, 0x0C, 0x61640403)
+        data = bytes(prefix) + b"opaque"
         transformed = TRANSFORM.transform_database(data, 0)
         self.assertEqual(transformed[:0x100], data[:0x100])
         self.assertNotEqual(transformed[0x100:], data[0x100:])

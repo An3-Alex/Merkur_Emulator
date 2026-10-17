@@ -18,7 +18,7 @@ COMPONENTS = {
     "qxl_installer": ("build/qxl-installer.exe", "96797f2c715a74197211a9cfc598ef9680f5bea4869e4f0fa7f1f25048142f9a"),
     "display_verify": ("build/display-verify.exe", "81e733743146b025d2f555ba476e1948be1d1515ba55465d8ba4418d4a193349"),
     "d3d9": ("build/d3d9-proxy/d3d9.dll", "1b32c211d41909c680e7947b988abce3e80f360dec8eff4a3b65855f88f1832b"),
-    "fbwf": ("build/sram-compat/FBWFLIB.dll", "4b6445c874c7495b88bc0c7cb138741fcc7fd6ca1944afbcd077aa1eb6d320cf"),
+    "fbwf": ("build/sram-compat/FBWFLIB.dll", "05db66e5c87089383ed74b83a0ee1b07b1c0f6422b2112b68d3d61366bb260a7"),
     "irrklang": ("build/irrklang-proxy/irrKlang.dll", "bc815b845c86d40f289d903b895ec7a082e67a37b379af01ae6207508edd6426"),
 }
 QXL_HASHES = {

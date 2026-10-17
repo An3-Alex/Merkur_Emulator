@@ -240,6 +240,23 @@ class DualOutputTests(unittest.TestCase):
         self.assertLess(swap.index('if (!mesa_gpu_mode_current())'), swap.index('SwapBuffers(hDC)'))
         self.assertLess(swap.index('if (!mesa_gpu_mode_current())'), swap.index('MesaBlitScale();'))
 
+    def test_a_program_in_front_of_the_game_gets_the_guest_desktop(self):
+        # The M202 service menu keeps the game's display mode: the guest flags
+        # each present while another program's full-screen window is in front.
+        swap = function(self.guest, 'int WINAPI wglSwapBuffers (HDC hdc)\n{')
+        self.assertIn('swapRet[0] = swapFps | (m90_foreign_front(hdc)? 0x40000000U:0);', swap)
+        self.assertLess(swap.index('swapRet[0] = swapFps'), swap.index('ptm[0xFF0 >> 2] = MESAGL_MAGIC;'))
+        front = function(self.guest, 'static int m90_foreign_front(HDC dc)')
+        # The Z order above the game's window decides, not the focused window.
+        for check in ('GetWindow(own, GW_HWNDPREV)', 'pid == self', '"Progman"', '"WorkerW"',
+                      'IsIconic(above)', 'rect.right >= info.rcMonitor.right'):
+            self.assertIn(check, front)
+        # The host takes the flag off before reading the FPS limit.
+        handler = self.transport[self.transport.index('            case 0xFF0:'):]
+        self.assertLess(handler.index('mesa_set_foreign_front((swapRet[0] & 0x40000000U) != 0);'),
+                        handler.index('SwapFpsLimit(swapRet[0])'))
+        self.assertLess(handler.index('swapRet[0] &= ~0x40000000U;'), handler.index('SwapFpsLimit(swapRet[0])'))
+
 
 class SdlRoutingTests(unittest.TestCase):
     def test_both_callbacks_fire_and_second_window_gets_its_own_context(self):
@@ -267,6 +284,10 @@ void mesa_prepare_window(int msaa, int alpha, int scale_x, void *cwnd_fn)
         self.assertLess(fixed.index('s->game_w = surface_width(s->scon->surface);'),
                         fixed.index('    s->render_pause = 1;'))
         self.assertIn('int mesa_gpu_mode_current(void)', fixed)
+        # A program in front of the game is checked per output, before the mode.
+        mode = function(fixed, 'int mesa_gpu_mode_current(void)')
+        self.assertLess(mode.index('if (s->foreign_front)'), mode.index('if (!s->game_w'))
+        self.assertIn('scon_cb.foreign_front = on;', function(fixed, 'void mesa_set_foreign_front(int on)'))
 
     def test_cabinet_windows_take_no_host_mouse(self):
         source = '''static void sdl_grab_start(struct sdl2_console *scon)

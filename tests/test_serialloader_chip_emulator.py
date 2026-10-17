@@ -27,6 +27,9 @@ class SerialLoaderChipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             loader = bytearray(0x500)
+            loader[:5] = b"|load"
+            loader[0x100:0x106] = bytes.fromhex("b0bc61640400")
+            loader[0x120:0x128] = bytes.fromhex("0cb8002000000000")
             loader[0x0E:0x14] = bytes.fromhex("4EF900000CC8")
             loader_path = directory / "loader.bin"
             loader_path.write_bytes(loader)
@@ -45,7 +48,7 @@ class SerialLoaderChipTests(unittest.TestCase):
             with patch("serialloader_chip_emulator.pinned_bytes", return_value=(b"", "A" * 64)), \
                  patch("serialloader_chip_emulator.inspect_database", return_value=module_report), \
                  patch("serialloader_chip_emulator.prepare_runtime", return_value=(
-                     b"runtime", {"transport_sha256": "B" * 64, "runtime_sha256": "C" * 64}
+                     bytes(12) + bytes.fromhex("61640403") + bytes(240), {"transport_sha256": "B" * 64, "runtime_sha256": "C" * 64}
                  )):
                 self.assertEqual(
                     chip.upload_factory_module(directory / "factory.xc", "A" * 64),

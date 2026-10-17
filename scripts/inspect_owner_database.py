@@ -14,6 +14,7 @@ import math
 import struct
 from collections import Counter
 from pathlib import Path
+from database_profile import PROFILES
 
 
 MAX_DUMP_SIZE = 64 * 1024 * 1024
@@ -67,10 +68,11 @@ def inspect_database(data: bytes) -> tuple[dict, dict, dict, str]:
     build_id = c_string(data, 0x7E, 0x07)
     release_id = c_string(data, 0x8C, 0x07)
     payload = data[HEADER_MIN_SIZE:]
+    profile = PROFILES.get(module_id & 0xFFFFFF00)
     structural_validations = {
         "load_extent_matches_file_size": end_address == expected_end_address,
         "end_address_complement": end_address_complement == ((~end_address) & 0xFFFFFFFF),
-        "module_family_616404": (module_id & 0xFFFFFF00) == DATABASE_MODULE_FAMILY,
+        "supported_module_family": profile is not None,
         "entrypoint_complement": entrypoint_complement == ((~entrypoint) & 0xFFFFFFFF),
         "entrypoint_in_loaded_image": DATABASE_LOAD_BASE <= entrypoint <= end_address,
         "nonempty_payload": bool(payload),
@@ -80,14 +82,16 @@ def inspect_database(data: bytes) -> tuple[dict, dict, dict, str]:
     validations = structural_validations | {
         # Full databases use an exclusive end pointer.  The observed small
         # auxiliary modules leave this optional field at zero.
-        "end_exclusive_valid": end_exclusive == ((end_address + 1) & 0xFFFFFFFF)
-        if role == "database" else end_exclusive in (0, (end_address + 1) & 0xFFFFFFFF),
+        "end_exclusive_valid": profile is not None and (
+            end_exclusive == end_address + profile.end_pointer_delta
+            if role == "database" else end_exclusive in (0, end_address + profile.end_pointer_delta)),
+        "fits_board_ram": profile is not None and end_address < profile.config_clear_start,
     }
     if role == "database":
         validations |= {
         "copyright_header": copyright_text.startswith("COPYRIGHT BY ADP "),
         "merkur_magie_product": product.startswith("MERKUR MAGIE"),
-        "cc4_edition": "CC4" in product,
+        "supported_edition": any(edition in product for edition in ('CC4', 'CC5')),
         }
     header = {
         "prefix_hex": data[:0x18].hex(" ").upper(),
@@ -99,6 +103,7 @@ def inspect_database(data: bytes) -> tuple[dict, dict, dict, str]:
         "end_exclusive": end_exclusive,
         "module_id": f"{module_id:08X}",
         "module_family": f"{module_id & 0xFFFFFF00:08X}",
+        "ram_mib": profile.ram_mib if profile else None,
         "entrypoint": entrypoint,
         "entrypoint_complement": entrypoint_complement,
         "entrypoint_file_offset": entrypoint - DATABASE_LOAD_BASE,
@@ -122,18 +127,19 @@ def inspect_loader(data: bytes) -> tuple[dict, dict, dict]:
     code_offset = 0x58
     payload = data[code_offset:]
     entry_target = be32(data, LOADER_ENTRY_STUB_OFFSET + 2)
-    sync_kill = decode_loader_sync(data, 0x7C, LOADER_SYNC_KILL_TABLE_OFFSET)
-    sync_wait = decode_loader_sync(data, 0x1B, LOADER_SYNC_WAIT_TABLE_OFFSET)
+    profile = next((p for p in PROFILES.values() if p.loader_entry == entry_target), None)
+    sync_kill = decode_loader_sync(data, 0x7C, profile.sync_kill_offset if profile else LOADER_SYNC_KILL_TABLE_OFFSET)
+    sync_wait = decode_loader_sync(data, 0x1B, profile.sync_wait_offset if profile else LOADER_SYNC_WAIT_TABLE_OFFSET)
     validations = {
         "loader_signature": data.startswith(b"|load"),
         "copyright_header": copyright_text.startswith("COPYRIGHT BY ADP "),
         "loader_version": version.startswith("L 5.0b"),
         "absolute_entry_jump": data[LOADER_ENTRY_STUB_OFFSET:LOADER_ENTRY_STUB_OFFSET + 2]
         == b"\x4E\xF9",
-        "entry_target_0cc8": entry_target == LOADER_ENTRY_TARGET,
+        "supported_entry_target": profile is not None,
         "sync_kill_sequence": sync_kill == LOADER_SYNC_KILL,
         "sync_wait_sequence": sync_wait == LOADER_SYNC_WAIT,
-        "68020_movec_instruction": data[0x2D4:0x2D8] == b"\x4E\x7B\x08\x01",
+        "68020_movec_instruction": profile is not None and data[profile.movec_offset:profile.movec_offset+4] == b"\x4E\x7B\x08\x01",
         "nonempty_payload": bool(payload),
     }
     header = {
@@ -147,6 +153,8 @@ def inspect_loader(data: bytes) -> tuple[dict, dict, dict]:
         "entry_stub_address": LOADER_LOAD_BASE + LOADER_ENTRY_STUB_OFFSET,
         "entry_target": entry_target,
         "entry_target_file_offset": entry_target - LOADER_LOAD_BASE,
+        "module_family": f'{profile.module_family:08X}' if profile else None,
+        "ram_mib": profile.ram_mib if profile else None,
         "sync_kill_hex": sync_kill.hex(" ").upper(),
         "sync_wait_hex": sync_wait.hex(" ").upper(),
         "sync_wait_ascii": sync_wait[1:].decode("ascii").rstrip("\n"),

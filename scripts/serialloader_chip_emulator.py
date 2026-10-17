@@ -17,6 +17,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from inspect_owner_database import inspect_dump as inspect_database
 from owner_database_runtime import prepare_runtime
+from database_profile import profile_for_loader, profile_for_header
 
 
 SYNC_WAIT = bytes.fromhex("1B53594E4353594E4357414954474F0A")
@@ -72,6 +73,7 @@ class VirtualDatabaseChip:
         self.programmed_time: str | None = None
         self.runtime: bytes | None = None
         self.events: list[dict] = []
+        self.profile = None
 
     def _event(self, operation: str, status: bytes) -> None:
         self.events.append({
@@ -84,15 +86,16 @@ class VirtualDatabaseChip:
         if self.phase is not ChipPhase.EMPTY:
             raise RuntimeError("Upload (R) is only valid for an empty/reset chip")
         data, digest = pinned_bytes(path, expected_sha256)
-        if len(data) < 0x410 or data[0x0E:0x14] != bytes.fromhex("4EF900000CC8"):
-            raise ValueError("loader entry is not the verified JMP 0x00000CC8")
+        self.profile = profile_for_loader(data)
         self.loader_sha256 = digest
         self.phase = ChipPhase.LOADER_RUNNING
         self._event("upload-r-loader", STATUS_READY)
         return STATUS_READY
 
-    def set_date(self, when: dt.datetime, daylight_saving: bool = False) -> tuple[bytes, bytes]:
-        if self.phase is not ChipPhase.FACTORY_RESET:
+    def set_date(self, when: dt.datetime, daylight_saving: bool = False,
+                 *, without_factory: bool = False) -> tuple[bytes, bytes]:
+        if (self.phase is not ChipPhase.FACTORY_RESET
+                and not (without_factory and self.phase is ChipPhase.LOADER_RUNNING)):
             raise RuntimeError("date requires FactoryReset first")
         frame = build_date_wire_frame(when, daylight_saving)
         # Validate the same seven-byte additive header accepted by the loader.
@@ -113,7 +116,7 @@ class VirtualDatabaseChip:
             raise ValueError("FactoryReset SHA-256 mismatch")
         if report["role"] != "database_module" or not report["recognized"]:
             raise ValueError("FactoryReset file is not a recognized database module")
-        if report["header"]["module_family"] != EXPECTED_FAMILY:
+        if report["header"]["module_family"] != f'{self.profile.module_family:08X}':
             raise ValueError("FactoryReset module belongs to another database family")
         self.factory_modules.append({"path": str(path.resolve()), "sha256": digest})
         self.phase = ChipPhase.FACTORY_RESET
@@ -128,7 +131,7 @@ class VirtualDatabaseChip:
         report = inspect_database(path)
         if report["role"] != "database_module" or not report["recognized"]:
             raise ValueError("config file is not a recognized database module")
-        if report["header"]["module_family"] != EXPECTED_FAMILY:
+        if report["header"]["module_family"] != f'{self.profile.module_family:08X}':
             raise ValueError("config module belongs to another database family")
         self.config_modules.append({"path": str(path.resolve()), "sha256": digest})
         self.phase = ChipPhase.CONFIG_SET
@@ -150,6 +153,8 @@ class VirtualDatabaseChip:
         runtime, report = prepare_runtime(
             path, expected_sha256, d3=d3, runtime_dump_path=runtime_dump
         )
+        if profile_for_header(runtime) != self.profile:
+            raise ValueError('Datenbank und Loader benötigen unterschiedliche RAM-Größen/Familien')
         self.runtime = runtime
         self.database_sha256 = report["transport_sha256"]
         self.runtime_sha256 = report["runtime_sha256"]
@@ -168,6 +173,7 @@ class VirtualDatabaseChip:
             "factory_modules": self.factory_modules,
             "config_modules": self.config_modules,
             "runtime_held_in_memory": self.runtime is not None,
+            "ram_mib": self.profile.ram_mib if self.profile else None,
             "events": self.events,
         }
 
@@ -180,8 +186,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--loader", type=Path, required=True)
     parser.add_argument("--expected-loader-sha256", required=True)
-    parser.add_argument("--factory", type=Path, required=True)
-    parser.add_argument("--expected-factory-sha256", required=True)
+    parser.add_argument("--factory", type=Path)
+    parser.add_argument("--expected-factory-sha256")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--expected-config-sha256")
     parser.add_argument("--database", type=Path, required=True)
@@ -194,8 +200,11 @@ def main() -> int:
 
     chip = VirtualDatabaseChip()
     chip.upload_loader(args.loader, args.expected_loader_sha256)
-    chip.upload_factory_module(args.factory, args.expected_factory_sha256)
-    chip.set_date(dt.datetime.fromisoformat(args.date))
+    if args.factory is not None:
+        if args.expected_factory_sha256 is None:
+            parser.error('--factory requires --expected-factory-sha256')
+        chip.upload_factory_module(args.factory, args.expected_factory_sha256)
+    chip.set_date(dt.datetime.fromisoformat(args.date), without_factory=args.factory is None)
     if args.config is not None:
         chip.upload_config_module(args.config, args.expected_config_sha256)
     chip.upload_database(

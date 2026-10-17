@@ -24,7 +24,9 @@ LEGACY_OPENGL_HASHES = {"385115486db927790080371dac45204a5cf809aba00cbd72c52c647
                         "d4955e298ec0f0c2ec1697e1ef5f205782d3eb9f80436f5129de4b8cb8b40b51",
                         "b4d5c55e8acf33a6e48da68ad56044c42072a1ec0509b5e3a612ceecefc6bb9d",
                         "988a3aa09c09c9f0977bd03f7f46c0ab847115b4f6944e09f1d8876555e92da9",
-                        "21f47fafa9896b9c8351970cc73a03910138cc7d8c21cbb480a0e03ecf2349a2"}
+                        "21f47fafa9896b9c8351970cc73a03910138cc7d8c21cbb480a0e03ecf2349a2",
+                        "82395cc3a4064fa80a61bd02ccff8c852ab59acae4fb82d034fedbaec3ee663e",  # before the program-in-front report
+                        "a7ca7476f34dfb066f55851ec97fcce5396d0da2248fac9094892d6574553ceb"}  # focus- instead of Z-order-based
 LEGACY_WINE_HASHES = {
     "d3d9.dll": {"50338a4b5ce53d3b7ab6e04f639b37c76edf2acf85f31f15b31c8ca2672f99bf",
                  "1f20631663df203ae597e788ab34c34b65a83249c70117bd8f30481ee8cb4b59",  # before the 10-MB guest log limit

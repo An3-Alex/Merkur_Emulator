@@ -56,6 +56,16 @@ class QemuLaunchPlanTests(unittest.TestCase):
         self.assertIn("-display gtk,show-tabs=on", arguments)
         self.assertNotIn("-no-reboot", arguments)
 
+    def test_selected_database_date_also_sets_the_pc_rtc(self):
+        date = "2020-02-01T22:14:00"
+        for launcher in (REAL_DATABASE_LAUNCHER, PROGRAM_AND_START_LAUNCHER):
+            with self.subTest(launcher=launcher.name):
+                plan = self.script_plan(launcher, "-DatabaseDate", date)
+                runtime = plan.get("runtime", plan)
+                self.assertIn("-rtc base=" + date + ",clock=host", runtime["visible_qemu"]["arguments"])
+                args = runtime["database_bridge"]["arguments"]
+                self.assertEqual(args[args.index("--rtc-date") + 1], date)
+
     def test_qemu3dfx_is_explicit_sdl_and_preserves_database_and_audio(self):
         for launcher in (LAUNCHER, REAL_DATABASE_LAUNCHER, PROGRAM_AND_START_LAUNCHER):
             plan = self.script_plan(launcher, "-GraphicsBackend", "qemu3dfx", "-SwapDisplays",
@@ -152,6 +162,14 @@ class QemuLaunchPlanTests(unittest.TestCase):
         integrated = self.script_plan(REAL_DATABASE_LAUNCHER, "-UsbTablet")
         self.assertIn("-usb -device usb-tablet", integrated["visible_qemu"]["arguments"])
 
+    def test_touch_only_guest_keeps_xp_controller_without_vmmouse_or_usb(self) -> None:
+        plan = self.script_plan(LAUNCHER, '-NoGuestPointer', '-UsbTablet')
+        self.assertIn('-machine pc,vmport=off', plan['arguments'])
+        self.assertNotIn('i8042=off', plan['arguments'])
+        self.assertNotIn('usb-tablet', plan['arguments'])
+        self.assertNotIn('usb-mouse', plan['arguments'])
+        self.assertEqual(plan['guest_pointer'], 'Windows mouse disabled (virtual cabinet touch only)')
+
     def test_integrated_database_plan_caps_only_emulated_database(self) -> None:
         plan = self.script_plan(REAL_DATABASE_LAUNCHER)
         bridge = plan["database_bridge"]
@@ -231,9 +249,16 @@ class QemuLaunchPlanTests(unittest.TestCase):
         arguments = programming["arguments"]
         self.assertEqual(programming["date"], "2012-02-01T22:14:00")
         # Dry-run without actual owner files uses placeholders, not an M90 whitelist.
-        for role in ("loader", "database", "factory"):
+        for role in ("loader", "database"):
             flag = f"--expected-{role}-sha256"
             self.assertEqual(arguments[arguments.index(flag) + 1], "0" * 64)
+        # A Factory module is programmed only when one is selected, then pinned like the others.
+        self.assertNotIn("--factory", arguments)
+        factory = r"D:\DB Files\Factory.bin"
+        arguments = self.script_plan(PROGRAM_AND_START_LAUNCHER, "-FactoryReset", factory)[
+            "virtual_programming"]["arguments"]
+        self.assertEqual(arguments[arguments.index("--factory") + 1], factory)
+        self.assertEqual(arguments[arguments.index("--expected-factory-sha256") + 1], "0" * 64)
         # A game package with its own game list is programmed without a configuration module.
         self.assertNotIn("--config", arguments)
         self.assertNotIn("--config", plan["runtime"]["database_bridge"]["arguments"])

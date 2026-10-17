@@ -29,6 +29,7 @@ SHELL_FILES = (
     "update_runtime_graphics.sh",
     "image_partition.sh",
     "stage_audio_bridge.sh",
+    "stage_guest_pointer.sh",
     "install_qxl_helper_shell.sh",
     "stage_qemu3dfx.sh",
     "stage_loader_idle.sh",
@@ -36,6 +37,7 @@ SHELL_FILES = (
 # Where the bridge finds its addresses in another build of the database program.
 DATA_FILES = (
     "firmware_addresses.json",
+    "firmware_builds.json",
 )
 REQUIRED_PYTHON_FILES = (
     "audio_legacy_driver.py",
@@ -46,11 +48,14 @@ REQUIRED_PYTHON_FILES = (
     "cabinet_control_panel.py",
     "cabinet_controls.py",
     "database_key.py",
+    "database_profile.py",
+    "database_rtc.py",
     "emulator_launcher.py",
     "emulator_processes.py",
     "duart_timer.py",
     "graphics_update.py",
     "guest_files.py",
+    "guest_pointer_image.py",
     "patch_loader_null_device.py",
     "loader_idle.py",
     "event_log_viewer.py",
@@ -58,6 +63,7 @@ REQUIRED_PYTHON_FILES = (
     "image_setup.py",
     "inspect_owner_database.py",
     "m68k_database_bridge.py",
+    "m202_touch_transport.py",
     "m68k_database_transform.py",
     "m68k_qemu_harness.py",
     "owner_config_runtime.py",
@@ -66,6 +72,7 @@ REQUIRED_PYTHON_FILES = (
     "qmp_capture.py",
     "qxl_setup_runner.py",
     "rtc4543.py",
+    "rtc3049.py",
     "virtual_touch.py",
     "service_sram.py",
     "qemu3dfx_image.py",

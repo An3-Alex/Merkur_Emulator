@@ -26,7 +26,7 @@ def pair_validations(database: dict, loader: dict) -> dict[str, bool]:
         "database_recognized": database.get("recognized") is True,
         "loader_recognized": loader.get("recognized") is True,
         "module_family_matches_loader":
-            (module_id & 0xFFFFFF00) == DATABASE_MODULE_FAMILY,
+            f'{module_id & 0xFFFFFF00:08X}' == loader.get('header', {}).get('module_family'),
         "loader_entry_resolves_inside_file":
             loader.get("header", {}).get("entry_target_file_offset", -1)
             < loader.get("size", 0),

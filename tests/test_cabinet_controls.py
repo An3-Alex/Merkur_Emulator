@@ -13,7 +13,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from cabinet_controls import (
-    CabinetControlServer, KEY_CURRENT_BASE, KEY_EVENT_BASE, KEY_IDS,
+    CabinetControlServer, KEY_CURRENT_BASE, KEY_EVENT_BASE, KEY_IDS, KEY_LAYOUTS,
     KEY_TABLE_BASE, format_tablet_packet, key_active_high, key_location, send_command,
     validate_command,
 )
@@ -77,6 +77,64 @@ class MemoryRsp:
 
 
 class CabinetControlTests(unittest.TestCase):
+    def test_family_layouts_keep_m88_m90_and_add_separate_m202_transfer(self):
+        self.assertEqual(KEY_LAYOUTS['m88_m90'], KEY_IDS)
+        self.assertEqual(KEY_IDS['einsatz'], 4)
+        keys = KEY_LAYOUTS['m202']
+        self.assertEqual(keys['einsatz'], 13)
+        self.assertEqual(keys['level'], 4)
+        self.assertEqual(keys['maxlevel'], 5)
+        for layout, names in KEY_LAYOUTS.items():
+            buttons = panel_module.BUTTON_LAYOUTS[layout]
+            self.assertEqual({name for _, name in buttons}, set(names))
+            cells = [panel_module.button_cell(n) for n in range(len(buttons) + 1)]
+            self.assertEqual(len(cells), len(set(cells)))
+
+    def test_m202_transfer_and_level_switches_are_independent(self):
+        rsp = MemoryRsp()
+        keys = KEY_LAYOUTS['m202']
+        for name, mapping in {'level': 0x1067, 'maxlevel': 0x1006, 'einsatz': 0x1004}.items():
+            rsp.write_memory(KEY_TABLE_BASE + keys[name] * 2, mapping.to_bytes(2, 'big'))
+        pending = {'einsatz'}
+        mappings = publish_cabinet_buttons(rsp, {'einsatz'}, pending, set(), key_ids=keys,
+                                            layout='m202')
+        transfer, transfer_event, mask = key_location(mappings['einsatz'])
+        level, level_event, level_mask = key_location(mappings['level'])
+        self.assertNotEqual(transfer, level)
+        self.assertEqual(rsp.data[transfer] & mask, 0)
+        self.assertEqual(rsp.data[transfer_event] & mask, mask)
+        self.assertEqual(rsp.data[level] & level_mask, level_mask)
+        self.assertEqual(rsp.data.get(level_event, 0) & level_mask, 0)
+        self.assertEqual(pending, set())
+        publish_cabinet_buttons(rsp, set(), set(), {'einsatz'}, key_ids=keys, layout='m202')
+        self.assertEqual(rsp.data[transfer] & mask, mask)
+
+    def test_command_names_are_validated_against_the_active_family(self):
+        event = {'type': 'button', 'name': 'level', 'down': True}
+        self.assertEqual(validate_command(event, key_ids=KEY_LAYOUTS['m202']), event)
+        with self.assertRaises(ValueError):
+            validate_command(event, key_ids=KEY_IDS)
+        event['name'] = 'maxeinsatz'
+        self.assertEqual(validate_command(event, key_ids=KEY_IDS), event)
+        with self.assertRaises(ValueError):
+            validate_command(event, key_ids=KEY_LAYOUTS['m202'])
+
+    def test_m202_info_uses_rising_edge_bank_and_releases_without_phantom_edge(self):
+        rsp = MemoryRsp()
+        keys = KEY_LAYOUTS['m202']
+        rsp.write_memory(KEY_TABLE_BASE + keys['info'] * 2, bytes.fromhex('90 22'))
+        current = KEY_CURRENT_BASE + 0x22
+        rsp.write_memory(current+8, b'\x10')
+        rsp.write_memory(current+0x88, b'\x10')
+        publish_cabinet_buttons(rsp, set(), set(), set(), key_ids=keys, layout='m202')
+        self.assertEqual(rsp.read_memory(current, 1)[0] & 0x10, 0)
+        self.assertEqual(rsp.read_memory(current+8, 1)[0] & 0x10, 0)
+        self.assertEqual(rsp.read_memory(current+0x88, 1)[0] & 0x10, 0)
+        publish_cabinet_buttons(rsp, {'info'}, {'info'}, set(), key_ids=keys, layout='m202')
+        self.assertEqual(rsp.read_memory(current, 1)[0] & 0x10, 0x10)
+        self.assertEqual(rsp.read_memory(current+8, 1)[0] & 0x10, 0x10)
+        self.assertEqual(rsp.read_memory(current+0x88, 1)[0] & 0x10, 0)
+
     def test_batched_scan_preserves_unrelated_bytes_and_limits_debugger_trips(self) -> None:
         rsp = MemoryRsp()
         for base in (KEY_CURRENT_BASE, KEY_EVENT_BASE):

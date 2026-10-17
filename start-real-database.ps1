@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Qemu = 'C:\Program Files\qemu\qemu-system-x86_64.exe',
     [string]$QemuM68k = 'C:\Program Files\qemu\qemu-system-m68k.exe',
     [string]$Python = 'python',
@@ -13,7 +13,7 @@ param(
     [string]$FactoryReset,
     [string]$Config,
     [datetime]$DatabaseDate = [datetime]'2012-02-01T22:14:00',
-    [Nullable[uint32]]$D3 = [uint32]::Parse('D27B7159', [Globalization.NumberStyles]::HexNumber),
+    [Nullable[uint32]]$D3 = $null,
     [string]$RuntimeDump,
     [string]$AdmissionEeprom,
     [switch]$DoorOpen,
@@ -50,10 +50,28 @@ $visibleOptions = @{
     MuteAudio = $MuteAudio
     AudioBridge = $AudioBridge; Python = $Python
     GraphicsBackend = $GraphicsBackend
+    RtcDate = $DatabaseDate
+}
+# Detect the database board before any VM or auxiliary process starts.
+$databaseBoard = $null
+if (-not [string]::IsNullOrWhiteSpace($Database) -and (Test-Path -LiteralPath $Database -PathType Leaf)) {
+    $profileArgs = @((Join-Path $PSScriptRoot 'scripts\database_profile.py'), $Database)
+    if (-not [string]::IsNullOrWhiteSpace($Loader)) { $profileArgs += @('--loader', $Loader) }
+    if (-not [string]::IsNullOrWhiteSpace($RuntimeDump)) { $profileArgs += @('--runtime-dump', $RuntimeDump) }
+    elseif ($null -ne $D3) { $profileArgs += @('--d3', ('0x{0:X8}' -f $D3)) }
+    $profileJson = & $Python @profileArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Datenbank-/Loader-Prüfung fehlgeschlagen; kein Emulator gestartet.' }
+    $databaseBoard = $profileJson | ConvertFrom-Json
+    if ($null -eq $D3 -and [string]::IsNullOrWhiteSpace($RuntimeDump)) { $D3 = [uint32]$databaseBoard.d3 }
+} elseif ($DryRun -and -not $PSBoundParameters.ContainsKey('D3') -and [string]::IsNullOrWhiteSpace($RuntimeDump)) {
+    # A preview without files retains the legacy placeholder; its board is unknown.
+    $D3 = [uint32]::Parse('D27B7159', [Globalization.NumberStyles]::HexNumber)
 }
 if (($null -eq $D3) -eq [string]::IsNullOrWhiteSpace($RuntimeDump)) {
     throw 'Specify exactly one of -D3 or -RuntimeDump. The raw flash files alone do not contain the boot-ROM D3 value.'
 }
+$keyLayout = if ($null -ne $databaseBoard) { $databaseBoard.cabinet_controls } else { 'm88_m90' }
+if ($keyLayout -eq 'm202') { $visibleOptions.NoGuestPointer = $true }
 
 $visibleLauncher = Join-Path $PSScriptRoot 'test-swiftshader.ps1'
 function Get-SelectedInputHash([string]$Path) {
@@ -106,6 +124,7 @@ if ($DryRun) {
     [ordered]@{
         visible_qemu = $visiblePlan
         database_bridge = [ordered]@{
+            board = $databaseBoard
             executable = 'python'
             arguments = $arguments
             timer_run_seconds = $DbTimerInterval
@@ -128,7 +147,8 @@ if ($DryRun) {
             visible = -not $NoControlWindow
             panel = 'scripts/cabinet_control_panel.py'
             touch = 'lower cabinet display and QEMU mouse'
-            buttons = @('menu', 'autostart', 'einsatz', 'maxeinsatz', 'start', 'auszahlung', 'service')
+            key_layout = $keyLayout
+            buttons = if ($keyLayout -eq 'm202') { @('menu', 'starten', 'level', 'maxlevel', 'start', 'auszahlung', 'info', 'service', 'einsatz') } else { @('menu', 'autostart', 'einsatz', 'maxeinsatz', 'start', 'auszahlung', 'automatik', 'service') }
             door_switch = $true
             port = 4554
         }
@@ -219,6 +239,7 @@ if (-not $NoEventWindow -or -not $NoControlWindow) {
             $controlScript = Join-Path $PSScriptRoot 'scripts\cabinet_control_panel.py'
             $capturePath = Join-Path $logDirectory 'cabinet-lower.png'
             $controlArgs = ('"{0}" --qemu-pid {1} --capture "{2}"' -f $controlScript, $qemuPid, $capturePath)
+            $controlArgs += ' --key-layout ' + $keyLayout
             if ($GraphicsBackend -eq 'qemu3dfx') { $controlArgs += ' --display-backend sdl' }
             if ($DoorOpen) { $controlArgs += ' --door-open' }
             $controlPanel = Start-Process -FilePath $pythonw -ArgumentList $controlArgs -PassThru

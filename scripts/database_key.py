@@ -18,6 +18,7 @@ import subprocess
 from typing import Callable
 
 from m68k_database_transform import RAW_PREFIX_SIZE, initialize_state, transform_database
+from database_profile import profile_for_database
 from owner_database_runtime import key_mismatch_message
 
 DEFAULT_KEY = 0xD27B7159
@@ -45,7 +46,9 @@ def key_matches(data: bytes, d3: int) -> bool:
     if len(data) < RAW_PREFIX_SIZE + 8:
         return False
     stored, end_address = struct.unpack_from(">II", data)
-    if end_address != LOAD_ADDRESS + len(data) - 1:
+    try:
+        profile = profile_for_database(data)
+    except ValueError:
         return False
     # Cheap filter first: the first two decrypted 68020 vectors.
     state, i, j = initialize_state(data[:RAW_PREFIX_SIZE], d3)
@@ -55,7 +58,10 @@ def key_matches(data: bytes, d3: int) -> bool:
         j = (j + state[i]) & 0xFF
         state[i], state[j] = state[j], state[i]
         vectors.append(value ^ state[(state[i] + state[j]) & 0xFF])
-    if not all(_plausible_vector(v, end_address) for v in struct.unpack(">II", vectors)):
+    stack, reset = struct.unpack('>II', vectors)
+    if (reset != struct.unpack_from('>I', data, 0x4C)[0]
+            and not (_plausible_vector(stack, profile.ram_size - 1)
+                     and _plausible_vector(reset, end_address))):
         return False
     return sum(transform_database(data, d3)[4:]) & 0xFFFFFFFF == stored
 
@@ -118,13 +124,17 @@ def resolve_key(database: Path, setting: str, cache: KeyCache, tool: Path,
                 progress: Callable[[float], None], notice: Callable[[str], None],
                 started: Callable[[subprocess.Popen], None] = lambda _process: None) -> int:
     data = database.read_bytes()
+    try:
+        profile = profile_for_database(data)
+    except ValueError as exc:
+        raise ValueError("Datenbank: keine Datenbankdatei dieser Modulfamilie (Kopfzeile passt nicht)") from exc
     explicit = parse_key(setting)
     if explicit is not None:
         if not key_matches(data, explicit):
             raise ValueError(key_mismatch_message("Datenbank", explicit))
         return explicit
     digest = hashlib.sha256(data).hexdigest().upper()
-    for candidate in dict.fromkeys(k for k in (cache.get(digest), DEFAULT_KEY) if k is not None):
+    for candidate in dict.fromkeys(k for k in (cache.get(digest), profile.default_key) if k is not None):
         if key_matches(data, candidate):
             cache.put(digest, candidate)
             return candidate

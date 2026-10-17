@@ -21,6 +21,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from m68k_database_transform import transform_database
+from database_profile import profile_for_header
 
 
 MAX_DATABASE_SIZE = 64 * 1024 * 1024
@@ -59,11 +60,13 @@ def _validate_runtime(runtime: bytes) -> dict:
     entrypoint = struct.unpack_from(">I", runtime, 0x4C)[0]
     entry_inverse = struct.unpack_from(">I", runtime, 0x50)[0]
     expected_size = end_address - LOAD_ADDRESS + 1
+    profile = profile_for_header(runtime)
     checks = {
         "size_matches_header": expected_size == len(runtime),
         "end_complement": end_inverse == ((~end_address) & 0xFFFFFFFF),
-        "exclusive_end": exclusive_end == end_address + 1,
-        "module_family": (module_id & 0xFFFFFF00) == EXPECTED_MODULE_FAMILY,
+        "exclusive_end": exclusive_end == end_address + profile.end_pointer_delta,
+        "module_family": (module_id & 0xFFFFFF00) == profile.module_family,
+        "fits_board_ram": end_address < profile.config_clear_start,
         "entry_complement": entry_inverse == ((~entrypoint) & 0xFFFFFFFF),
         "entry_in_image": LOAD_ADDRESS <= entrypoint <= end_address,
         "native_checksum": (sum(runtime[4:]) & 0xFFFFFFFF) == stored_checksum,
@@ -77,6 +80,8 @@ def _validate_runtime(runtime: bytes) -> dict:
         "entrypoint": f"{entrypoint:08X}",
         "module_id": f"{module_id:08X}",
         "stored_checksum": f"{stored_checksum:08X}",
+        "ram_size": profile.ram_size,
+        "ram_mib": profile.ram_mib,
         "validations": checks,
     }
 

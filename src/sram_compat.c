@@ -48,6 +48,8 @@ typedef BOOL (WINAPI *PFN_GET_DEVICE_INTERFACE_DETAIL_W)(
 typedef BOOL (WINAPI *PFN_DESTROY_DEVICE_INFO_LIST)(HDEVINFO);
 typedef DWORD (WINAPI *PFN_FBWF_ENABLE_FILTER)(void);
 typedef DWORD (WINAPI *PFN_FBWF_IS_FILTER_ENABLED)(PBOOL, PBOOL);
+typedef DWORD (WINAPI *PFN_FBWF_SET_CACHE_THRESHOLD)(ULONG);
+typedef DWORD (WINAPI *PFN_FBWF_GET_MEMORY_USAGE)(void *);
 
 static PFN_GET_CLASS_DEVS_W g_real_get_class_devs;
 static HDEVINFO (WINAPI *g_real_get_class_devs_a)(const GUID *, PCSTR, HWND, DWORD);
@@ -507,6 +509,21 @@ __declspec(dllexport) DWORD WINAPI FbwfIsFilterEnabled(PBOOL current, PBOOL next
         (PFN_FBWF_IS_FILTER_ENABLED)real_fbwf_export("FbwfIsFilterEnabled");
     if (!function) return ERROR_PROC_NOT_FOUND;
     return function(current, next);
+}
+
+/* Newer game programs also size the write filter's cache. */
+__declspec(dllexport) DWORD WINAPI FbwfSetCacheThreshold(ULONG threshold) {
+    PFN_FBWF_SET_CACHE_THRESHOLD function =
+        (PFN_FBWF_SET_CACHE_THRESHOLD)real_fbwf_export("FbwfSetCacheThreshold");
+    if (!function) return ERROR_PROC_NOT_FOUND;
+    return function(threshold);
+}
+
+__declspec(dllexport) DWORD WINAPI FbwfGetMemoryUsage(void *usage) {
+    PFN_FBWF_GET_MEMORY_USAGE function =
+        (PFN_FBWF_GET_MEMORY_USAGE)real_fbwf_export("FbwfGetMemoryUsage");
+    if (!function) return ERROR_PROC_NOT_FOUND;
+    return function(usage);
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {

@@ -82,7 +82,9 @@ class RuntimeSchedulingTests(unittest.TestCase):
     def test_original_interrupt_mask_blocks_host_irq_injection(self):
         self.assertTrue(interrupts_unmasked(0x2000))
         self.assertTrue(interrupts_unmasked(0x201F))
-        for mask in range(1, 8):
+        # ORI #$0500,SR blocks in every build; the 4-MB board runs with mask 4 otherwise.
+        self.assertTrue(interrupts_unmasked(0x2400))
+        for mask in (5, 6, 7):
             self.assertFalse(interrupts_unmasked(0x2000 | mask << 8))
 
     def test_pending_cabinet_work_keeps_real_board_ticks(self):

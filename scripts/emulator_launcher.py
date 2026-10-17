@@ -55,9 +55,9 @@ FIELDS = (
     ("image", "Neue Arbeitskopie / Start-Image"),
     ("swiftshader", "SwiftShader-DLL (nur Softwaremodus)"),
     ("qxl_driver_dir", "QXL-Treiberordner"),
-    ("database", "Datenbank (M90)"),
+    ("database", "Datenbank (2/4 MB automatisch)"),
     ("loader", "Loader"),
-    ("factory", "Factory"),
+    ("factory", "Factory (optional)"),
     ("config", "Konfiguration (nur wenn das Spielepaket eine hat)"),
     ("admission_eeprom", "Zulassungskarte (EEPROM)"),
     ("qemu_x86", "QEMU Spiel-PC"),
@@ -163,8 +163,11 @@ class Launcher(tk.Tk):
             for key, _group, _label, kind, _limits, _help in EMULATION_FIELDS
         }
         self.status = tk.StringVar(value="Dateien auswählen und prüfen.")
+        self.database_board = tk.StringVar(value='Datenbank-RAM: automatisch aus der DB-Datei')
         self.prepare_timer = tk.StringVar(value="Image-Einrichtung: noch nicht gestartet")
         self._build()
+        self.variables['database'].trace_add('write', self._database_changed)
+        self._database_changed()
         self.graphics_backend = None
         self.emulation_variables["graphics_backend"].trace_add("write", self._graphics_changed)
         self._graphics_changed()
@@ -175,7 +178,7 @@ class Launcher(tk.Tk):
     def _build(self) -> None:
         outer = ttk.Frame(self, padding=16)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="M90 Emulator", font=("Segoe UI", 19, "bold")).pack(anchor="w")
+        ttk.Label(outer, text="Merkur Emulator", font=("Segoe UI", 19, "bold")).pack(anchor="w")
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True, pady=(6, 0))
         setup_tab = ttk.Frame(notebook, padding=8)
@@ -190,7 +193,7 @@ class Launcher(tk.Tk):
         ttk.Label(
             guide,
             text="1. QEMU, Python und WSL/NTFS-Werkzeuge prüfen oder installieren.\n"
-                 "2. Original-CF-Image, neuen Dateinamen für die Arbeitskopie, M90-Dateien, "
+                 "2. Original-CF-Image, neuen Dateinamen für die Arbeitskopie, Datenbank-Dateien, "
                  "Zulassungskarten-EEPROM und QXL auswählen; SwiftShader nur für den Grafikpfad SwiftShader.\n"
                  "3. „Frisches Image einrichten“ abwarten; das Original bleibt unverändert.\n"
                  "4. „Dateien und Programme prüfen“, dann „Emulator starten“. "
@@ -223,6 +226,8 @@ class Launcher(tk.Tk):
                 row=row + 1, column=2, pady=3
             )
         form.columnconfigure(1, weight=1)
+        ttk.Label(form, textvariable=self.database_board).grid(
+            row=len(FIELDS)+1, column=0, columnspan=3, sticky='w', pady=(6, 0))
 
         controls = ttk.Frame(outer)
         controls.pack(fill="x", pady=(12, 6))
@@ -259,6 +264,19 @@ class Launcher(tk.Tk):
         self.output.configure(yscrollcommand=scroll.set)
         self.output.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+
+    def _database_changed(self, *_args) -> None:
+        from database_profile import profile_for_database
+        path = Path(self.variables['database'].get().strip())
+        if not path.is_file():
+            self.database_board.set('Datenbank-RAM: automatisch aus der DB-Datei')
+            return
+        try:
+            profile = profile_for_database(path.read_bytes())
+        except (OSError, ValueError) as exc:
+            self.database_board.set(f'Datenbank-RAM nicht erkannt: {exc}')
+        else:
+            self.database_board.set(f'Datenbank-RAM automatisch erkannt: {profile.ram_mib} MB')
 
     def _build_emulation_settings(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="Änderungen gelten beim nächsten Emulatorstart, nicht für die Image-Einrichtung.",
@@ -621,6 +639,16 @@ class Launcher(tk.Tk):
         database = Path(selection.database)
         runtime, _report = prepare_runtime(database, file_sha256(database),
                                            d3=int(selection.db_key, 16))
+        from database_profile import minimum_clock_year, profile_for_loader, profile_for_header
+        profile = profile_for_header(runtime)
+        if profile_for_loader(Path(selection.loader).read_bytes()) != profile:
+            raise ValueError('Datenbank und Loader benötigen unterschiedliche RAM-Größen/Familien')
+        earliest = minimum_clock_year(runtime)
+        if earliest is not None and int(selection.database_date[:4]) < earliest:
+            raise ValueError(
+                f"Startdatum {selection.database_date[:10]} liegt vor dem Mindestjahr {earliest} dieser Datenbank; "
+                "sie bliebe mit dem Uhrenfehler F_UHR stehen. Startdatum in den Emulationseinstellungen anpassen.")
+        self.events.put(('line', f'Datenbank erkannt: {profile.ram_mib} MB RAM, Familie {profile.module_family:08X}.\n'))
         mismatches = database_hook_mismatches(runtime, Path(selection.loader).read_bytes())
         if any(group != "loader" for group, _ in mismatches):
             from firmware_relocation import load_table, resolve

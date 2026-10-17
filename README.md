@@ -102,3 +102,17 @@ eines Spiels.
 | Loader | `61640400.bin` | `b0768c65b34834c7a740615d2b0abdb470aec012fe4dc4a3c11531efa221e109` |
 | Factory | `61640403.bin` | `f4fa79dea48398c30ca717264ec82a824b6a93127cdf14c1b3f628bb53bc6d1c` |
 | Spielepaket | `MERKUR_MAGIE_88_CC4.bin` | `acb5f53a21daee63330e98e3e57f081f4716c697de8f35709425736c5e127d50` |
+
+**Kombination 3 (Magie 202 CC5):** CF-Karte mit
+`M202-C0-T0-V5.00-P264_…` in `WorkDir\CFversion.txt` (4-MB-Platine). Die
+Datenbank meldet sich als `ADP2003`; die Zulassungskarte braucht dazu das
+Profil 2002. Das Datum muss ab 2015 liegen, sonst meldet das Spiel „F UHR“.
+Eine Factory-Datei ist nicht nötig. Getestet sind Start, Spielauswahl, Touch
+und das Servicemenü mit Daten.
+
+| Teil | Datei | SHA-256 |
+| --- | --- | --- |
+| CF-Karte | `game.exe` | `96c50c624a065528e7c31c9856fceb87cb6f53274f89e8cfddf27d48dae64a54` |
+| Loader | `Loader_61640604_5.0b_BC4.01.bin` | `cf299726a65a1c7f4742dcf891330a258a2f2e735fe128baec4e9b0ffab61bc9` |
+| Konfiguration | `init_spielepaket_M202_2020_DELUXE_all_games_enc.xc` | `5d786101c960e5e10ada3e5c6b2691c1259a1f7c194e3e2a7c2ff8a5c0b732c7` |
+| Spielepaket | `MERKUR_MAGIE_202_CC5.bin` | `5fba1662425b077136e81babdcfc0f8c6561bfb8485b142097335f2a11be174f` |

@@ -17,6 +17,9 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "scripts"))
 from portable_launcher_model import Selection, check_runtime, launch_command, validate_selection
 from admission_card import build_m90_eeprom
+from database_profile import PROFILES
+from m68k_database_transform import transform_database
+from test_database_profile import runtime_for, loader_for
 import portable_launcher_model as model
 
 
@@ -136,11 +139,14 @@ class PortableLauncherTests(unittest.TestCase):
             files = {}
             for key in ("database", "loader", "factory", "config"):
                 file = root / f"different package {key}.bin"
-                file.write_bytes(key.encode())
+                data = (transform_database(runtime_for(0x61640400), PROFILES[0x61640400].default_key)
+                        if key == "database" else loader_for(0x61640400) if key == "loader"
+                        else key.encode())
+                file.write_bytes(data)
                 files[key] = str(file)
             selection = Selection(image="unused.img", admission_eeprom="card.bin",
                                   qemu_x86="qemu-system-x86_64.exe",
-                                  qemu_m68k="qemu-system-m68k.exe", python="python.exe", **files)
+                                  qemu_m68k="qemu-system-m68k.exe", python=sys.executable, **files)
             completed = subprocess.run([*launch_command(selection, PROJECT), "-DryRun"],
                                        capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)

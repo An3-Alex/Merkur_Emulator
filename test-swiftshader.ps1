@@ -7,10 +7,12 @@ param(
     [ValidateSet(64, 128, 256)][int]$QxlVramMiB = 64,
     [ValidateSet('swiftshader', 'qemu3dfx')][string]$GraphicsBackend = 'swiftshader',
     [switch]$UsbTablet,
+    [switch]$NoGuestPointer,
     [switch]$SwapDisplays,
     [switch]$MuteAudio,
     [switch]$AudioBridge = $true,
     [string]$Python = 'python',
+    [Nullable[datetime]]$RtcDate = $null,
     [switch]$DryRun
 )
 
@@ -20,6 +22,9 @@ $qemuImage = $Image.Replace('\', '/')
 $primaryDisplay = if ($SwapDisplays) { 'lower' } else { 'upper' }
 $secondaryDisplay = if ($SwapDisplays) { 'upper' } else { 'lower' }
 $qemuArgs = '-accel whpx -machine pc -cpu "qemu32,+sse2,model-id=Intel(R) Celeron(R) M CPU 440 @ 1.86GHz" -smp 1 -m 2048 -drive file="' + $qemuImage + '",format=raw,if=ide,index=0,media=disk -boot c -vga none -device qxl-vga,id=lower,revision=2,vgamem_mb=64,xres=640,yres=480 -device qxl,id=upper,revision=2,vgamem_mb=64,xres=640,yres=480 -display gtk,show-tabs=on -netdev user,id=n0,restrict=on -device i82559c,netdev=n0,mac=00:13:95:06:EE:6E -serial null -serial null -serial tcp:127.0.0.1:4553,server=on,wait=off -serial null -qmp tcp:127.0.0.1:4444,server=on,wait=off'
+if ($null -ne $RtcDate) {
+    $qemuArgs += ' -rtc base=' + $RtcDate.ToString('yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + ',clock=host'
+}
 # The geometry the card was formatted with instead of the one QEMU's BIOS
 # derives from its size: a 4-GB card can otherwise stop with
 # "A disk read error occurred".
@@ -29,7 +34,11 @@ if ($Image -and (Test-Path -LiteralPath $Image -PathType Leaf)) {
         $qemuArgs += " -global ide-hd.lcyls=$($Matches[1]) -global ide-hd.lheads=$($Matches[2]) -global ide-hd.lsecs=$($Matches[3])"
     }
 }
-if ($UsbTablet) { $qemuArgs += ' -usb -device usb-tablet' }
+if ($NoGuestPointer) {
+    # XP's boot loader needs the 8042 controller even with cabinet-only touch.
+    # Keep its keyboard/controller; disable Windows mouse delivery separately.
+    $qemuArgs = $qemuArgs.Replace('-machine pc ', '-machine pc,vmport=off ')
+} elseif ($UsbTablet) { $qemuArgs += ' -usb -device usb-tablet' }
 $audioBackend = 'bridge'
     # COM1 is dedicated PCM transport. The database remains on COM3.
     # Reserve legacy slot 0, then create only the PCM UART with a high clock.
@@ -76,7 +85,7 @@ $launchPlan = [ordered]@{
     graphics_backend = $GraphicsBackend
     display_backend = if ($GraphicsBackend -eq 'qemu3dfx') { 'sdl' } else { 'gtk' }
     gpu_adapters = @($(if ($GraphicsBackend -eq 'qemu3dfx') { 0; 1 }))
-    guest_pointer = if ($UsbTablet) { 'USB tablet (absolute coordinates)' } else { 'PS/2 mouse' }
+    guest_pointer = if ($NoGuestPointer) { 'Windows mouse disabled (virtual cabinet touch only)' } elseif ($UsbTablet) { 'USB tablet (absolute coordinates)' } else { 'PS/2 mouse' }
     guest_reboots_allowed = $true
 }
 if ($DryRun) {
@@ -92,6 +101,14 @@ if (-not (Test-Path -LiteralPath $Qemu -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $Image -PathType Leaf)) {
     throw "QEMU image not found: $Image"
+}
+if ($NoGuestPointer) {
+    $pointerScript = & wsl.exe --user root --exec wslpath -a -u (Join-Path $PSScriptRoot 'scripts\stage_guest_pointer.sh')
+    if ($LASTEXITCODE -ne 0) { throw 'WSL-Pfad konnte nicht bestimmt werden.' }
+    $pointerImage = & wsl.exe --user root --exec wslpath -a -u $Image
+    if ($LASTEXITCODE -ne 0) { throw 'WSL-Imagepfad konnte nicht bestimmt werden.' }
+    & wsl.exe --user root --exec bash $pointerScript.Trim() $pointerImage.Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'M202-Mauseingabe konnte nicht abgeschaltet werden.' }
 }
 if ($GraphicsBackend -eq 'qemu3dfx') {
     # A stock image with the new host executable is not a GPU installation.
@@ -137,3 +154,4 @@ Write-Output "QEMU_PID=$qemuPid"
 Write-Output "QEMU_AUDIO backend=$audioBackend card=$($launchPlan.audio_card) recording=false muted=$([bool]$MuteAudio)"
 Write-Output "QEMU_CPU unrestricted_host=true guest_vcpus=$GuestVcpus ram_mib=$GuestRamMiB acceleration=$Acceleration"
 Write-Output "QEMU_DISPLAYS primary=$primaryDisplay secondary=$secondaryDisplay cabinet_preview=lower"
+Write-Output "QEMU_GUEST_POINTER=$($launchPlan.guest_pointer)"

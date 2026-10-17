@@ -176,6 +176,12 @@ eines Ausgangs von der Spielauflösung ab, mit der die GPU den Ausgang
 präsentiert keine GPU-Bilder. Sobald die Spielauflösung zurückkehrt,
 übernimmt wieder die GPU. Der andere Ausgang bleibt davon unberührt.
 
+Das Servicemenü der M202 behält die Auflösung bei. Deshalb meldet der Gast mit
+jedem Bild, ob in der Fensterreihenfolge über dem Spielfenster ein sichtbares
+Fenster eines anderen Programms liegt, das den Monitor dieses Ausgangs ganz
+bedeckt (der Desktop der Shell zählt nicht). Solange das so ist, zeigt der Host
+an diesem Ausgang ebenfalls die Windows-Anzeige.
+
 Die Migration erfolgt an einer getrennten Arbeitskopie. Original-CF,
 persistenter SRAM und die bisherige funktionierende Variante werden nicht
 durch die Auswahl des anderen Grafikpfads verändert.

@@ -16,6 +16,7 @@ struct Database {
     std::vector<uint8_t> bytes;
     uint32_t stored_checksum;
     uint32_t end_address;
+    uint32_t ram_size;
 };
 
 static uint32_t be32(const uint8_t* p) {
@@ -36,21 +37,43 @@ static bool load_database(const char* path, Database* db) {
     if (!ok) return false;
     db->stored_checksum = be32(db->bytes.data());
     db->end_address = be32(db->bytes.data() + 4);
-    return db->end_address == kLoadBase + db->bytes.size() - 1;
+    const uint32_t family = be32(db->bytes.data() + 0x0C) & 0xFFFFFF00u;
+    db->ram_size = family == 0x61640400u ? 0x200000u : family == 0x61640600u ? 0x400000u : 0;
+    const uint32_t delta = family == 0x61640600u ? 5u : 1u;
+    return db->ram_size && db->end_address == kLoadBase + db->bytes.size() - 1
+        && be32(db->bytes.data() + 8) == ~db->end_address
+        && be32(db->bytes.data() + 0x10) == db->end_address + delta
+        && db->end_address < db->ram_size - 0x400u;
 }
 
 static void initialize(uint8_t state[256], const uint8_t* prefix, uint32_t d3) {
+    const bool four_mb = (be32(prefix + 0x0C) & 0xFFFFFF00u) == 0x61640600u;
     const uint32_t seed_value = d3 ^ kSeedXor;
     const uint8_t seed[4] = {
         uint8_t(seed_value >> 24), uint8_t(seed_value >> 16),
         uint8_t(seed_value >> 8), uint8_t(seed_value)
     };
+    uint8_t table[16] = {0xFC,0x42,0xE9,0x79,0xFB,0x9F,0x53,0xEA,
+                         0xBC,0x85,0x93,0xBA,0x62,0x1F,0x85,0x4D};
+    table[0] ^= uint8_t(d3 >> 24); table[1] ^= uint8_t(d3 >> 16);
+    table[2] ^= uint8_t(d3 >> 8); table[3] ^= uint8_t(d3);
+    for (unsigned n = 0; n < 16; ++n) table[n] = uint8_t(table[n] - n);
     for (unsigned i = 0; i < 256; ++i) state[i] = uint8_t(i);
     uint8_t j = 0;
     for (unsigned i = 0; i < 256; ++i) {
-        const uint8_t key = uint8_t(prefix[i] ^ seed[i & 3] ^ uint8_t(i) ^ uint8_t(i * 4));
+        const uint8_t key = four_mb
+            ? uint8_t(prefix[i] ^ table[i & 15] ^ uint8_t(i) ^ uint8_t(i * 2))
+            : uint8_t(prefix[i] ^ seed[i & 3] ^ uint8_t(i) ^ uint8_t(i * 4));
         j = uint8_t(j + state[i] + key);
         const uint8_t temp = state[i]; state[i] = state[j]; state[j] = temp;
+    }
+}
+
+static void discard_initial(const Database& db, uint8_t state[256], uint8_t* i, uint8_t* j) {
+    if (db.ram_size != 0x400000u) return;
+    for (unsigned n = 0; n < 77; ++n) {
+        *i = uint8_t(*i + 1); *j = uint8_t(*j + state[*i]);
+        const uint8_t temp = state[*i]; state[*i] = state[*j]; state[*j] = temp;
     }
 }
 
@@ -70,13 +93,14 @@ static bool vector_filter(const Database& db, uint32_t d3) {
     uint8_t state[256];
     initialize(state, db.bytes.data(), d3);
     uint8_t i = 0, j = 0, plain[8];
+    discard_initial(db, state, &i, &j);
     for (unsigned n = 0; n < 8; ++n)
         plain[n] = uint8_t(db.bytes[kRawPrefix + n] ^ next_byte(state, &i, &j));
     // The image begins with its vector table. Its second long is the reset
     // PC, which the plaintext head names at 0x4C; the first, the stack, may
     // lie beyond the image on boards with more RAM.
     if (be32(plain + 4) == be32(db.bytes.data() + 0x4C)) return true;
-    return plausible_vector(be32(plain), db.end_address) &&
+    return plausible_vector(be32(plain), db.ram_size - 1) &&
            plausible_vector(be32(plain + 4), db.end_address);
 }
 
@@ -84,6 +108,7 @@ static bool native_checksum_matches(const Database& db, uint32_t d3) {
     uint8_t state[256];
     initialize(state, db.bytes.data(), d3);
     uint8_t i = 0, j = 0;
+    discard_initial(db, state, &i, &j);
     uint32_t sum = 0;
     for (size_t n = 4; n < kRawPrefix; ++n) sum += db.bytes[n];
     for (size_t n = kRawPrefix; n < db.bytes.size(); ++n)

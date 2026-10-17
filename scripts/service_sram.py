@@ -19,8 +19,10 @@ PREVIOUS_SRAM_HASHES = {"4d62ee6e183ba534f7ac7d2780d4a5fb90f2394bc4fc68fd6d6b9ea
                         "31cac0b2141d2c8896e9dcf5cc2bd19ea0e3e0e1196625b9a79645d1edc6c9d6",
                         "4b98b1f2a60e939e1dc40c135e73edb47805249493d566e3f0599106f21ed608",  # before the 10-MB guest log limit
                         # found the game's imports at the verified version's addresses only
-                        "555f2a7b6e886e9476b7f83ecee89c3cfa369c823f82f5bdf4c6181c7ce41dd2"}
-SRAM_HASH = "4b6445c874c7495b88bc0c7cb138741fcc7fd6ca1944afbcd077aa1eb6d320cf"
+                        "555f2a7b6e886e9476b7f83ecee89c3cfa369c823f82f5bdf4c6181c7ce41dd2",
+                        # without the cache exports newer game programs import
+                        "4b6445c874c7495b88bc0c7cb138741fcc7fd6ca1944afbcd077aa1eb6d320cf"}
+SRAM_HASH = "05db66e5c87089383ed74b83a0ee1b07b1c0f6422b2112b68d3d61366bb260a7"
 SERVICE_PATH = "WorkDir/GGSG_Servic/GGSG_Servic.exe"
 # The service program requests its data from the database through the game
 # and shows "FEHLER : keine Daten" when they are not complete in time: 60 s for
@@ -28,17 +30,35 @@ SERVICE_PATH = "WorkDir/GGSG_Servic/GGSG_Servic.exe"
 # database sends them within seconds; the emulated one needs several times as
 # long. Entries: VA of the MOV EDX,imm32 loading the time, cabinet ms, emulator ms.
 SERVICE_DEADLINES = ((0x00406B03, 60_000, 300_000), (0x00406D80, 25_000, 125_000))
+# Other versions wait for the follow-up request with another time (M202 service
+# 7.5.4.6: 30 s). It is extended where exactly one MOV EDX,imm32;MOV EAX,EBX
+# passes it to the same wait routine as the 60 s menu deadline.
+FOLLOW_UP_DEADLINES = ((25_000, 125_000), (30_000, 150_000))
+MENU_DEADLINE = 60_000
 
 
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def patch_service(source: bytes, *, writable_iat: bool = True, longer_deadlines: bool = True) -> bytes:
+def wait_calls(source: bytes, milliseconds: int) -> list[tuple[int, int]]:
+    """(offset, call target) of each MOV EDX,ms; MOV EAX,EBX; CALL rel32."""
+    instruction = b"\xBA" + struct.pack("<I", milliseconds) + b"\x8B\xC3\xE8"
+    found, at = [], source.find(instruction)
+    while at >= 0:
+        target = at + 12 + struct.unpack_from("<i", source, at + 8)[0]
+        found.append((at, target))
+        at = source.find(instruction, at + 1)
+    return found
+
+
+def patch_service(source: bytes, *, writable_iat: bool = True, longer_deadlines: bool = True,
+                  follow_up_deadline: bool = True) -> bytes:
     """writable_iat=False reproduces the earlier patch, which XP cannot load: its
     loader unprotects only the section holding the import directory while
     binding, so the Borland IATs in read-only .idata faulted (0xC0000005).
-    longer_deadlines=False reproduces the patch before SERVICE_DEADLINES."""
+    longer_deadlines=False reproduces the patch before SERVICE_DEADLINES,
+    follow_up_deadline=False the one before FOLLOW_UP_DEADLINES."""
     verified = digest(source) == SERVICE_HASH
     if len(source) < 0x40 or source[:2] != b"MZ":
         raise ValueError("Unrecognized service executable; original must remain unchanged")
@@ -79,6 +99,12 @@ def patch_service(source: bytes, *, writable_iat: bool = True, longer_deadlines:
                 if at < 0 or bytes(source).find(instruction, at + 1) >= 0:
                     continue
             struct.pack_into("<I", data, at + 1, emulator)
+        menu = wait_calls(bytes(source), MENU_DEADLINE)
+        if follow_up_deadline and not verified and len(menu) == 1:
+            for cabinet, emulator in FOLLOW_UP_DEADLINES:
+                calls = [at for at, target in wait_calls(bytes(source), cabinet) if target == menu[0][1]]
+                if len(calls) == 1 and data[calls[0] + 1:calls[0] + 5] == struct.pack("<I", cabinet):
+                    struct.pack_into("<I", data, calls[0] + 1, emulator)
     old_import = offset(u32(opt + 104))
     descriptors = bytearray()
     cursor = old_import
@@ -143,7 +169,8 @@ def update(root: Path, proxy: Path, *, check_only: bool = False) -> str:
         current = service.read_bytes()
         original = backup.read_bytes() if backup.exists() else current
         patched = patch_service(original)
-        earlier = (patch_service(original, longer_deadlines=False),
+        earlier = (patch_service(original, follow_up_deadline=False),
+                   patch_service(original, longer_deadlines=False),
                    patch_service(original, writable_iat=False, longer_deadlines=False))
         if current not in (original, patched, *earlier):
             raise ValueError("Service differs from original and verified SRAM version")
@@ -211,7 +238,8 @@ def note(root: Path) -> str | None:
     if digest(original) == SERVICE_HASH:
         return None
     patched = patch_service(original)[:len(original)]
-    instructions = [b"\xBA" + struct.pack("<I", cabinet) for _, cabinet, _ in SERVICE_DEADLINES]
+    cabinets = {cabinet for _, cabinet, _ in SERVICE_DEADLINES} | {cabinet for cabinet, _ in FOLLOW_UP_DEADLINES}
+    instructions = [b"\xBA" + struct.pack("<I", cabinet) for cabinet in sorted(cabinets)]
     extended = sum(original.count(instruction) - patched.count(instruction) for instruction in instructions)
     return ("Hinweis: Serviceprogramm-Version nicht verifiziert; es wurde wie das bekannte angebunden "
             f"({extended} von {len(SERVICE_DEADLINES)} Datenfristen verlängert).")

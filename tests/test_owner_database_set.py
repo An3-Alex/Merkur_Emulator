@@ -21,7 +21,7 @@ class OwnerDatabaseSetTests(unittest.TestCase):
         loader = {
             "role": "loader",
             "recognized": True,
-            "header": {"entry_target_file_offset": 0x8C8},
+            "header": {"entry_target_file_offset": 0x8C8, "module_family": "61640400"},
             "size": 0xBC0,
         }
         return database, loader

@@ -26,17 +26,29 @@ KEY_IDS = {
     "automatik": 10,  # Spielstart-Automatik
     "service": 11,    # Schlossschalter / service switch
 }
+# M202 names ID 4/5 Level/MaxLevel and adds the separate Einsatz switch at 13.
+# Keep the original M88/M90 IDs and protocol names intact.
+KEY_LAYOUTS = {
+    'm88_m90': KEY_IDS,
+    'm202': {'menu': 2, 'starten': 3, 'level': 4, 'maxlevel': 5,
+             'start': 6, 'auszahlung': 9, 'info': 10, 'service': 11, 'einsatz': 13},
+}
+ALL_KEY_NAMES = frozenset(name for layout in KEY_LAYOUTS.values() for name in layout)
 # Keys only some cabinets have.  Their switch stays as the board delivers it
 # except while the key is used, so a cabinet without it behaves as before.
 OPTIONAL_KEYS = frozenset({"automatik"})
 KEY_TABLE_BASE = 0x0005B942
 KEY_TABLE_STRIDE = 0x20
-KEY_TABLE_PROFILES = 13
+# One row per cabinet type; the rows end where the next table begins with
+# FF FF (13 rows in Magie 90, 22 in Magie 202).  The bound only stops reading
+# far beyond any table.
+KEY_TABLE_PROFILES = 32
+KEY_TABLE_END = b"\xff\xff"
 KEY_CURRENT_BASE = 0x001E247B
-KEY_EVENT_BASE = 0x001E2503
+KEY_EVENT_BASE = KEY_CURRENT_BASE + 0x88   # the edge accessor's bank
 
 
-def validate_command(value: Any) -> dict[str, Any]:
+def validate_command(value: Any, *, key_ids=None) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("command must be a JSON object")
     kind = value.get("type")
@@ -49,7 +61,7 @@ def validate_command(value: Any) -> dict[str, Any]:
             raise ValueError("door.open must be boolean")
         return {"type": "door", "open": value["open"]}
     if kind == "button" and set(value) == {"type", "name", "down"}:
-        if value["name"] not in KEY_IDS or type(value["down"]) is not bool:
+        if value["name"] not in (ALL_KEY_NAMES if key_ids is None else key_ids) or type(value["down"]) is not bool:
             raise ValueError("invalid button command")
         return {"type": "button", "name": value["name"], "down": value["down"]}
     if kind == "coin" and set(value) == {"type", "cents"}:
@@ -178,7 +190,8 @@ class CabinetEventQueue(queue.Queue):
 class CabinetControlServer:
     """Loopback-only JSON-line ingress; the bridge applies events on its CPU thread."""
 
-    def __init__(self, port: int = CONTROL_PORT) -> None:
+    def __init__(self, port: int = CONTROL_PORT, *, key_ids=None) -> None:
+        self.key_ids = KEY_IDS if key_ids is None else key_ids
         self.events = CabinetEventQueue(maxsize=256)
         self._stop = threading.Event()
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -208,7 +221,7 @@ class CabinetControlServer:
                         data.extend(chunk)
                     if b"\n" not in data or len(data) > 512:
                         raise ValueError("missing or oversized JSON line")
-                    event = validate_command(json.loads(data.split(b"\n", 1)[0]))
+                    event = validate_command(json.loads(data.split(b"\n", 1)[0]), key_ids=self.key_ids)
                     if event["type"] != "ping":
                         self.events.put_nowait(event)
                         if event["type"] == "button":
